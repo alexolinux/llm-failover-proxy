@@ -1,0 +1,29 @@
+config.yaml
+
+# Backup files
+*.bak
+
+# Environment variables
+*.env
+!.env.example
+!nvidia-failover.env.example
+
+# Python virtual environments & cache
+litellm-venv/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Operating system & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.pid
+.llmfailoverproxy.pid
+/tmp/
