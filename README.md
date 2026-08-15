@@ -30,7 +30,15 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 ## Setup & Quickstart
 
-### 1. Install LiteLLM into a Virtual Environment
+### 1. Configure Environment Keys
+
+```shell
+cp nvidia-failover.env.example nvidia-failover.env
+# Edit NVIDIA_API_KEY and LITELLM_MASTER_KEY in nvidia-failover.env
+chmod 600 nvidia-failover.env
+```
+
+### 2. Install LiteLLM into a Virtual Environment
 
 ```shell
 git clone https://github.com/alexolinux/llm-failover-proxy.git
@@ -38,14 +46,6 @@ cd llm-failover-proxy
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. Configure Environment Keys
-
-```shell
-cp nvidia-failover.env.example nvidia-failover.env
-# Edit NVIDIA_API_KEY and LITELLM_MASTER_KEY in nvidia-failover.env
-chmod 600 nvidia-failover.env
 ```
 
 ### 3. Benchmark Models & Auto-Reorder `config.yaml`
