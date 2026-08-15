@@ -51,11 +51,11 @@ pip install -r requirements.txt
 ### 3. Benchmark Models & Auto-Reorder `config.yaml`
 
 ```shell
+# Preview ranking and proposed config without writing:
+NVIDIA_API_KEY=nvapi-... ./test-models.sh --dry-run
+
 # Run test and automatically update config.yaml with the fastest viable models:
 NVIDIA_API_KEY=nvapi-... ./test-models.sh --apply
-
-# Or preview ranking and proposed config without writing:
-NVIDIA_API_KEY=nvapi-... ./test-models.sh --dry-run
 ```
 
 This script:
