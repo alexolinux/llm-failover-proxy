@@ -1,0 +1,31 @@
+// Merge this into your opencode.json (global: ~/.config/opencode/opencode.json,
+// or project-local ./opencode.json). opencode now talks to ONE model,
+// "nvidia-pool/opencode-main" — the proxy handles switching underneath it.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "nvidia-pool/opencode-main",
+  "provider": {
+    "nvidia-pool": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA Build (auto-failover)",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "{env:LITELLM_MASTER_KEY}"
+      },
+      "models": {
+        "opencode-main": {
+          "name": "NVIDIA free pool",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        }
+      }
+    }
+  }
+}
