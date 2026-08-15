@@ -68,7 +68,9 @@ start_foreground() {
     local bin
     bin=$(find_litellm_bin)
     cd "$SCRIPT_DIR"
-    exec "$bin" --config "$SCRIPT_DIR/config.yaml" --port "$PORT" --host "$HOST" "$@"
+    # LiteLLM treats the generic DEBUG environment variable as a boolean option.
+    # Do not inherit unrelated values such as DEBUG=release from the caller.
+    exec env -u DEBUG "$bin" --config "$SCRIPT_DIR/config.yaml" --port "$PORT" --host "$HOST" "$@"
 }
 
 start_background() {
@@ -83,7 +85,8 @@ start_background() {
 
     echo "Starting llm-failover-proxy in background..."
     cd "$SCRIPT_DIR"
-    nohup "$bin" --config "$SCRIPT_DIR/config.yaml" --port "$PORT" --host "$HOST" > "$LOG_FILE" 2>&1 &
+    # See start_foreground: prevent unrelated DEBUG values from breaking Click parsing.
+    nohup env -u DEBUG "$bin" --config "$SCRIPT_DIR/config.yaml" --port "$PORT" --host "$HOST" > "$LOG_FILE" 2>&1 &
     local new_pid=$!
     echo "$new_pid" > "$PID_FILE"
 

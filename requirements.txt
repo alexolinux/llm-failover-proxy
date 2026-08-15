@@ -1,6 +1,9 @@
 # Tested together in a clean virtual environment (no system site packages).
-# The proxy extra provides the LiteLLM CLI and its compatible FastAPI/ASGI stack.
+# The proxy extra provides the LiteLLM CLI and its compatible ASGI stack.
 litellm[proxy]==1.96.2
+
+# LiteLLM 1.96.2 imports FastAPI's get_flat_dependant, removed in FastAPI 0.141.
+fastapi==0.140.0
 
 # Direct imports used by reorder_config.py and test-models.sh.
 PyYAML==6.0.3
