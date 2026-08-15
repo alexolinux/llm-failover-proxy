@@ -1,3 +1,7 @@
-litellm[proxy]
-#fastapi<0.116.0
-fastapi
+# Tested together in a clean virtual environment (no system site packages).
+# The proxy extra provides the LiteLLM CLI and its compatible FastAPI/ASGI stack.
+litellm[proxy]==1.96.2
+
+# Direct imports used by reorder_config.py and test-models.sh.
+PyYAML==6.0.3
+requests==2.34.2
