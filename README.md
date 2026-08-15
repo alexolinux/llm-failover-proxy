@@ -30,12 +30,55 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 ## Setup & Quickstart
 
-### 1. Configure Environment Keys
+### 1. Environment Configuration
+
+Configure Environment Keys, creating your `nvidia-failover.env`
 
 ```shell
 cp nvidia-failover.env.example nvidia-failover.env
 # Edit NVIDIA_API_KEY and LITELLM_MASTER_KEY in nvidia-failover.env
 chmod 600 nvidia-failover.env
+```
+
+### 2 Point OpenCode at the Proxy
+
+Copy/Create `opencode.provider.jsonc`
+
+```shell
+cp opencode.provider.jsonc.example opencode.provider.jsonc
+```
+
+Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration (`~/.config/opencode/opencode.jsonc` or local `opencode.jsonc`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "nvidia-pool/opencode-main",
+  "provider": {
+    "nvidia-pool": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA Build (auto-failover)",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "YOUR_LITELLM_MASTER_KEY"
+      },
+      "models": {
+        "opencode-main": {
+          "name": "NVIDIA free pool",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
 ### 2. Install LiteLLM into a Virtual Environment
@@ -72,7 +115,7 @@ This script:
 
 You can control the proxy using `./run.sh` directly or load the `llmfailoverproxy` shell function into your terminal session:
 
-#### Direct CLI:
+#### Direct CLI
 
 ```shell
 ./run.sh start    # Start in background
@@ -83,7 +126,8 @@ You can control the proxy using `./run.sh` directly or load the `llmfailoverprox
 ./run.sh          # Run in foreground
 ```
 
-#### Shell Function (Optional):
+#### Shell Function (Optional)
+
 Source `run.sh` in your shell (or add `source /path/to/llm-failover-proxy/run.sh` to your `~/.bashrc` / `~/.zshrc`):
 
 ```shell
@@ -97,41 +141,6 @@ llmfailoverproxy stop
 ```
 
 `run.sh` automatically detects any virtual environment in the project directory, loads `nvidia-failover.env`, and starts LiteLLM proxy on `127.0.0.1:4000`.
-
-### 5. Point OpenCode at the Proxy
-
-Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration (`~/.config/opencode/opencode.jsonc` or local `opencode.jsonc`):
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "model": "nvidia-pool/opencode-main",
-  "provider": {
-    "nvidia-pool": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "NVIDIA Build (auto-failover)",
-      "options": {
-        "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "YOUR_LITELLM_MASTER_KEY"
-      },
-      "models": {
-        "opencode-main": {
-          "name": "NVIDIA free pool",
-          "capabilities": {
-            "tools": true,
-            "input": ["text"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 65536,
-            "output": 8192
-          }
-        }
-      }
-    }
-  }
-}
-```
 
 ### 6. Monitor Proxy & Failovers
 
