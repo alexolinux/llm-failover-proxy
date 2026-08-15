@@ -1,4 +1,5 @@
 config.yaml
+opencode.provider.jsonc
 
 # Backup files
 *.bak
