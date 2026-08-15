@@ -1,0 +1,58 @@
+# litellm proxy config — pools NVIDIA Build free-tier models behind one
+# OpenAI-compatible endpoint, with automatic failover on 429 / 503 / timeout.
+#
+# All entries share model_name: "opencode-main" — that's what makes them
+# a fallback *group*. `order` sets priority. On a 429/503, litellm cools down
+# that deployment and retries the next ordered model inside the SAME request —
+# opencode never sees the failure.
+#
+# Auto-reordered by test-models.sh on 2026-08-15 14:12
+# Reorder / trim this list based on what you observe in test-models.sh.
+
+# Create a config.yaml from this example file.
+# The list can be expanded with other LLMs by adding more entries to the model_list.
+
+model_list:
+
+  - model_name: opencode-main
+    litellm_params:
+      model: <llm_model_1>
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+      order: 1
+
+  - model_name: opencode-main
+    litellm_params:
+      model: <llm_model_2>
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+      order: 2
+
+  - model_name: opencode-main
+    litellm_params:
+      model: <llm_model_3>
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+      order: 3
+
+router_settings:
+  routing_strategy: simple-shuffle
+  cooldown_time: 60
+  allowed_fails: 1
+  num_retries: 3
+  retry_policy:
+    RateLimitErrorRetries: 3
+    InternalServerErrorRetries: 1
+    TimeoutErrorRetries: 1
+  allowed_fails_policy:
+    RateLimitErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 45
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
