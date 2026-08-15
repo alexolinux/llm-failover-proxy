@@ -59,6 +59,7 @@ NVIDIA_API_KEY=nvapi-... ./test-models.sh --dry-run
 ```
 
 This script:
+
 1. **Verifies Tool-Calling Support**: Identifies models that properly support OpenAI-compatible function calling (crucial for OpenCode editing/terminal tools).
 2. **Measures Precise Latency**: Measures decimal response time and ranks models from fastest to slowest.
 3. **Issues Usability Warnings**:
@@ -72,6 +73,7 @@ This script:
 You can control the proxy using `./run.sh` directly or load the `llmfailoverproxy` shell function into your terminal session:
 
 #### Direct CLI:
+
 ```shell
 ./run.sh start    # Start in background
 ./run.sh status   # Check status and health
