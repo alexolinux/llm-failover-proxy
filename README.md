@@ -2,7 +2,7 @@
 
 ---
 
-**opencode + NVIDIA Build** free tier automatic 429/503 failover
+**opencode + NVIDIA Build + OpenRouter** free tier automatic 429/503 failover
 
 ## Why a proxy, not an opencode setting?
 
@@ -12,16 +12,19 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 - Automatic failover: On `429 Too Many Requests` or `503 Service Unavailable`, LiteLLM puts the active deployment on cooldown and retries with the next deployment in the fallback pool inside the **same** request — OpenCode never sees the error.
 - Lightweight & Portable: Runs locally under your user account without requiring root privileges or complex daemon setups.
+- **Multi-provider**: The pool can mix NVIDIA Build free-tier models and OpenRouter free models in one fallback group. `test-models.sh` detects the provider per model — entries whose model name starts with `openrouter/` are probed against `https://openrouter.ai/api/v1` with `OPENROUTER_API_KEY`; everything else is probed against NVIDIA's endpoint with `NVIDIA_API_KEY`.
 
 ---
 
 ## File Structure
 
 - `config.yaml` - Model pool definitions, retry policies, and fallback order
-- `nvidia-failover.env.example` - Template for your API keys
+- `config.yaml.example` - Template for `config.yaml`
+- `nvidia-failover.env.example` - Template for your API keys (`NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`)
 - `nvidia-failover.env` - Your actual local environment file (`chmod 600`)
 - `run.sh` - Entrypoint script that auto-detects your virtualenv and runs LiteLLM
 - `opencode.provider.jsonc` - Configuration snippet to merge into `opencode.json`
+- `opencode.provider.jsonc.example` - Template for the above
 - `test-models.sh` - Validation script to benchmark latency, tool-calling support, issue warnings, and reorder `config.yaml`
 - `reorder_config.py` - Helper script to safely reorder `config.yaml` prioritizing fastest responsive models
 - `retest-models-slow.sh` - Quick latency probe for large models
@@ -36,11 +39,13 @@ Configure Environment Keys, creating your `nvidia-failover.env`
 
 ```shell
 cp nvidia-failover.env.example nvidia-failover.env
-# Edit NVIDIA_API_KEY and LITELLM_MASTER_KEY in nvidia-failover.env
+# Edit NVIDIA_API_KEY, OPENROUTER_API_KEY and LITELLM_MASTER_KEY in nvidia-failover.env
 chmod 600 nvidia-failover.env
 ```
 
-### 2 Point OpenCode at the Proxy
+`OPENROUTER_API_KEY` is only required if you add `openrouter/...` models to `config.yaml` — NVIDIA-only pools can leave it blank.
+
+### 2. Point OpenCode at the Proxy
 
 Copy/Create `opencode.provider.jsonc`
 
@@ -60,11 +65,33 @@ Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration
       "name": "NVIDIA Build (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "YOUR_LITELLM_MASTER_KEY"
+        "apiKey": "{env:LITELLM_MASTER_KEY}"
       },
       "models": {
         "opencode-main": {
           "name": "NVIDIA free pool",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        }
+      }
+    },
+    "openrouter-pool": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenRouter Build (auto-failover)",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "{env:LITELLM_MASTER_KEY}"
+      },
+      "models": {
+        "opencode-main": {
+          "name": "OpenRouter free pool",
           "capabilities": {
             "tools": true,
             "input": ["text"],
@@ -81,7 +108,9 @@ Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration
 }
 ```
 
-### 2. Install LiteLLM into a Virtual Environment
+Both pools point at the same local proxy, so either `nvidia-pool/opencode-main` or `openrouter-pool/opencode-main` works as the top-level `model` — the proxy routes across the whole fallback group underneath.
+
+### 3. Install LiteLLM into a Virtual Environment
 
 ```shell
 git clone https://github.com/alexolinux/llm-failover-proxy.git
@@ -91,15 +120,17 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Benchmark Models & Auto-Reorder `config.yaml`
+### 4. Benchmark Models & Auto-Reorder `config.yaml`
 
 ```shell
 # Preview ranking and proposed config without writing:
-NVIDIA_API_KEY=nvapi-... ./test-models.sh --dry-run
+NVIDIA_API_KEY=nvapi-... OPENROUTER_API_KEY=sk-or-... ./test-models.sh --dry-run
 
 # Run test and automatically update config.yaml with the fastest viable models:
-NVIDIA_API_KEY=nvapi-... ./test-models.sh --apply
+NVIDIA_API_KEY=nvapi-... OPENROUTER_API_KEY=sk-or-... ./test-models.sh --apply
 ```
+
+Flags: `-c, --config <path>` (default `./config.yaml`), `-a, --apply`, `-d, --dry-run`, `-b, --burst` (10-request concurrency rate-limit isolation test), `-h, --help`.
 
 This script:
 
@@ -109,9 +140,9 @@ This script:
    - 🔴 **Incompatible (`NO-TOOL`)**: Models that return text but ignore tool calls are flagged for exclusion.
    - 🔴 **Inaccessible / Error (`HTTP 4xx/5xx`)**: Offline or failing models.
    - 🟡 **High Latency Alert (`> 10s`)**: Warns about sluggish models and demotes them to lower priority.
-4. **Auto-Reorders `config.yaml`** (with `--apply`): Automatically creates a backup (`config.yaml.bak`) and updates `order: 1..N` prioritizing the most responsive verified models.
+4. **Auto-Reorders `config.yaml`** (with `--apply`): Automatically creates a backup (`config.yaml.bak`) and updates `order: 1..N` prioritizing the most responsive verified models. Rate-limited models (`429`) are kept active at the end of the pool; unstable/incompatible models are commented out with a diagnostic note — **commented-out models are never deleted**, they stay in the file ready to be un-commented or re-tested later.
 
-### 4. Start & Control the Proxy
+### 5. Start & Control the Proxy
 
 You can control the proxy using `./run.sh` directly or load the `llmfailoverproxy` shell function into your terminal session:
 
@@ -155,6 +186,23 @@ When a rate-limit (429) or overload (503) occurs, LiteLLM logs the cooldown and 
 - `cooldown_time: 60`: Number of seconds a rate-limited model is benched before retry.
 - `allowed_fails_policy.RateLimitErrorAllowedFails: 1`: Immediately bench a model on the first 429/503 rather than wasting retries on a struggling backend.
 - `request_timeout: 45`: Fail over from a hung or lagging model before the client times out.
+
+### Adding a model to the pool
+
+Each entry in `model_list` shares `model_name: "opencode-main"` (that's what groups them for failover) and sets its own `litellm_params`:
+
+```yaml
+  - model_name: opencode-main
+    litellm_params:
+      model: openrouter/anthropic/claude-3.5-haiku    # openrouter/ prefix -> OpenRouter endpoint
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      order: 7
+```
+
+- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY` (the `model` may or may not carry an `openai/` prefix).
+- OpenRouter models: `model` must start with `openrouter/`, use `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
+- `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
 
 ## Author
 

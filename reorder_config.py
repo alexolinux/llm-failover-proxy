@@ -13,6 +13,7 @@ Reordering logic:
 
 import sys
 import os
+import re
 import json
 import shutil
 import argparse
@@ -110,12 +111,58 @@ def format_commented_block(entry: dict, status: str, note: str) -> str:
         f"  #     model: {params.get('model', '')}",
         f"  #     api_base: {params.get('api_base', 'https://integrate.api.nvidia.com/v1')}",
         f"  #     api_key: {params.get('api_key', 'os.environ/NVIDIA_API_KEY')}",
+        f"  #     order: {params.get('order', '')}",
     ]
     return "\n".join(lines)
 
 
-def generate_clean_yaml(config: dict, excluded: list, existing_entries: dict) -> str:
-    """Generates formatted YAML with active entries and excluded models as annotated comments."""
+def extract_commented_entries(raw_text: str) -> list:
+    """
+    Extracts commented-out model entries from the raw config.yaml text.
+
+    yaml.safe_load discards comments, so commented models must be read from the
+    raw file text to keep them in the config across reorders. Returns a list of
+    (model_name, comment_text) tuples. model_name has any 'openai/' prefix
+    stripped so it can be matched against active/excluded results.
+    """
+    entries = []
+    lines = raw_text.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if re.match(r'^\s*#\s*-\s*model_name:', line):
+            # Collect this comment block plus any trailing comment lines
+            block = [line]
+            i += 1
+            while i < n and (
+                lines[i].lstrip().startswith('#')
+            ):
+                block.append(lines[i])
+                i += 1
+            text = "\n".join(block)
+            # Extract the model name from the 'model:' line within the block
+            model_name = ""
+            for bl in block:
+                m = re.search(r'#\s*model:\s*(\S+)', bl)
+                if m:
+                    model_name = m.group(1)
+                    break
+            model_name = model_name.replace("openai/", "").strip()
+            if model_name:
+                entries.append((model_name, text))
+        else:
+            i += 1
+    return entries
+
+
+def generate_clean_yaml(
+    config: dict,
+    excluded: list,
+    existing_entries: dict,
+    preserved_comments: list = None,
+) -> str:
+    """Generates formatted YAML with active entries, excluded models as comments, and preserved commented entries."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     header = f"""# litellm proxy config — pools NVIDIA Build free-tier models behind one
 # OpenAI-compatible endpoint, with automatic failover on 429 / 503 / timeout.
@@ -145,7 +192,8 @@ model_list:
 
     models_block = "\n\n".join(body_models)
 
-    # Append excluded models as commented-out blocks
+    # Render excluded models as commented entries within model_list
+    # (so they stay in the file and are easy to uncomment later)
     excluded_block = ""
     if excluded:
         excluded_comments = []
@@ -153,18 +201,40 @@ model_list:
             model_name = r["model"]
             status = r.get("status", "EXCLUDED")
             note = r.get("note", "")
-            entry = existing_entries.get(model_name, {
-                "model_name": "opencode-main",
-                "litellm_params": {
-                    "model": f"openai/{model_name}",
-                    "api_base": "https://integrate.api.nvidia.com/v1",
-                    "api_key": "os.environ/NVIDIA_API_KEY",
+            entry = existing_entries.get(model_name)
+            if entry is None:
+                entry = {
+                    "model_name": "opencode-main",
+                    "litellm_params": {
+                        "model": f"openai/{model_name}",
+                        "api_base": "https://integrate.api.nvidia.com/v1",
+                        "api_key": "os.environ/NVIDIA_API_KEY",
+                    }
                 }
-            })
             excluded_comments.append(format_commented_block(entry, status, note))
 
         excluded_block = "\n\n  # --- Excluded by test-models.sh (uncomment to re-add to pool) ---\n\n"
         excluded_block += "\n\n".join(excluded_comments)
+
+    # Preserve the user's own commented-out model entries from the original
+    # config.yaml so they are NOT silently removed on reorder. Skip entries
+    # that are active or excluded now (they are already rendered above).
+    preserved_block = ""
+    if preserved_comments:
+        active_names = set()
+        for entry in config.get("model_list", []):
+            raw = entry.get("litellm_params", {}).get("model", "")
+            active_names.add(raw.replace("openai/", "").strip())
+        excluded_names = set(r["model"].replace("openai/", "").strip() for r in excluded)
+
+        kept = []
+        for model_name, text in preserved_comments:
+            if model_name in active_names or model_name in excluded_names:
+                continue
+            kept.append(text)
+        if kept:
+            preserved_block = "\n\n  # --- Kept from previous config (commented out) ---\n\n"
+            preserved_block += "\n\n".join(kept)
 
     router_settings = yaml.dump(
         {"router_settings": config.get("router_settings", {})},
@@ -181,7 +251,8 @@ model_list:
 
     return (
         f"{header}\n{models_block}"
-        f"{excluded_block}\n\n"
+        f"{excluded_block}"
+        f"{preserved_block}\n\n"
         f"{router_settings}\n{litellm_settings}\n{general_settings}"
     )
 
@@ -208,6 +279,11 @@ def main():
     config = load_config(args.config)
     results = load_results(args.results)
 
+    # Read raw text so commented-out model entries can be preserved (yaml drops comments)
+    with open(args.config, "r", encoding="utf-8") as f:
+        raw_config = f.read()
+    preserved_comments = extract_commented_entries(raw_config)
+
     # Build lookup before reorder mutates config
     existing_entries = {}
     for entry in config.get("model_list", []):
@@ -215,7 +291,7 @@ def main():
         existing_entries[raw.replace("openai/", "").strip()] = entry
 
     updated_config, approved, preserved, excluded = reorder_models(config, results)
-    new_yaml = generate_clean_yaml(updated_config, excluded, existing_entries)
+    new_yaml = generate_clean_yaml(updated_config, excluded, existing_entries, preserved_comments)
 
     if args.dry_run or (not args.apply):
         print("=== PROPOSED config.yaml ===")

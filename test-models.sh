@@ -147,9 +147,19 @@ import json, requests, time, sys
 
 api_key = "$NVIDIA_API_KEY"
 model = "$m"
-url = "https://integrate.api.nvidia.com/v1/chat/completions"
+# Determine provider and API endpoint based on model name
+if model.startswith("openrouter/"):
+    api_base = "https://openrouter.ai/api/v1"
+    api_key = "$OPENROUTER_API_KEY"
+    url = f"{api_base}/chat/completions"
+    auth_header = "Authorization"
+else:
+    api_base = "https://integrate.api.nvidia.com/v1"
+    url = f"{api_base}/chat/completions"
+    auth_header = "Authorization"
+
 headers = {
-    "Authorization": f"Bearer {api_key}",
+    auth_header: f"Bearer {api_key}",
     "Content-Type": "application/json"
 }
 
