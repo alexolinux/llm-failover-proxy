@@ -67,16 +67,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load environment variables if not present in the current shell
-if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/nvidia-failover.env" ]; then
+# Load environment variables if not present in the current shell.
+if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/llm-failover.env" ]; then
   set -a
-  source "$SCRIPT_DIR/nvidia-failover.env" 2>/dev/null || true
+  source "$SCRIPT_DIR/llm-failover.env" 2>/dev/null || true
   set +a
 fi
 
 if [ -z "${NVIDIA_API_KEY:-}" ]; then
   echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY environment variable is not set.\033[0m"
-  echo "Please set it (e.g. export NVIDIA_API_KEY=nvapi-...) or configure nvidia-failover.env"
+  echo "Please set it (e.g. export NVIDIA_API_KEY=nvapi-...) or configure llm-failover.env"
   exit 1
 fi
 
@@ -147,9 +147,19 @@ import json, requests, time, sys
 
 api_key = "$NVIDIA_API_KEY"
 model = "$m"
-url = "https://integrate.api.nvidia.com/v1/chat/completions"
+# Determine provider and API endpoint based on model name
+if model.startswith("openrouter/"):
+    api_base = "https://openrouter.ai/api/v1"
+    api_key = "$OPENROUTER_API_KEY"
+    url = f"{api_base}/chat/completions"
+    auth_header = "Authorization"
+else:
+    api_base = "https://integrate.api.nvidia.com/v1"
+    url = f"{api_base}/chat/completions"
+    auth_header = "Authorization"
+
 headers = {
-    "Authorization": f"Bearer {api_key}",
+    auth_header: f"Bearer {api_key}",
     "Content-Type": "application/json"
 }
 

@@ -10,11 +10,33 @@
       "name": "NVIDIA Build (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "{env:LITELLM_MASTER_KEY}"
+        "apiKey": "{env:LITELLM_MASTER_KEY}" //Add/Replace your variable LITELLM_MASTER_KEY
       },
       "models": {
         "opencode-main": {
           "name": "NVIDIA free pool",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        }
+      }
+    },
+    "openrouter-pool": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenRouter Build (auto-failover)",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "{env:LITELLM_MASTER_KEY}" //Add/Replace your variable LITELLM_MASTER_KEY
+      },
+      "models": {
+        "opencode-main": {
+          "name": "OpenRouter free pool",
           "capabilities": {
             "tools": true,
             "input": ["text"],
