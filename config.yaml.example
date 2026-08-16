@@ -24,16 +24,9 @@ model_list:
   - model_name: opencode-main
     litellm_params:
       model: <llm_model_2>
-      api_base: https://integrate.api.nvidia.com/v1
-      api_key: os.environ/NVIDIA_API_KEY
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
       order: 2
-
-  - model_name: opencode-main
-    litellm_params:
-      model: <llm_model_3>
-      api_base: https://integrate.api.nvidia.com/v1
-      api_key: os.environ/NVIDIA_API_KEY
-      order: 3
 
 router_settings:
   routing_strategy: simple-shuffle
