@@ -7,7 +7,7 @@ opencode.provider.jsonc
 # Environment variables
 *.env
 !.env.example
-!nvidia-failover.env.example
+!llm-failover.env.example
 
 # Python virtual environments & cache
 litellm-venv/

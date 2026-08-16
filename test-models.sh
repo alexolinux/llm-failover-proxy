@@ -67,16 +67,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load environment variables if not present in the current shell
-if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/nvidia-failover.env" ]; then
+# Load environment variables if not present in the current shell.
+if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/llm-failover.env" ]; then
   set -a
-  source "$SCRIPT_DIR/nvidia-failover.env" 2>/dev/null || true
+  source "$SCRIPT_DIR/llm-failover.env" 2>/dev/null || true
   set +a
 fi
 
 if [ -z "${NVIDIA_API_KEY:-}" ]; then
   echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY environment variable is not set.\033[0m"
-  echo "Please set it (e.g. export NVIDIA_API_KEY=nvapi-...) or configure nvidia-failover.env"
+  echo "Please set it (e.g. export NVIDIA_API_KEY=nvapi-...) or configure llm-failover.env"
   exit 1
 fi
 

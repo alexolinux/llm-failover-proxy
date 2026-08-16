@@ -20,8 +20,8 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 - `config.yaml` - Model pool definitions, retry policies, and fallback order
 - `config.yaml.example` - Template for `config.yaml`
-- `nvidia-failover.env.example` - Template for your API keys (`NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`)
-- `nvidia-failover.env` - Your actual local environment file (`chmod 600`)
+- `llm-failover.env.example` - Template for your API keys (`NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`)
+- `llm-failover.env` - Your actual local environment file (`chmod 600`)
 - `run.sh` - Entrypoint script that auto-detects your virtualenv and runs LiteLLM
 - `opencode.provider.jsonc` - Configuration snippet to merge into `opencode.json`
 - `opencode.provider.jsonc.example` - Template for the above
@@ -35,12 +35,12 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 ### 1. Environment Configuration
 
-Configure Environment Keys, creating your `nvidia-failover.env`
+Configure Environment Keys, creating your `llm-failover.env`
 
 ```shell
-cp nvidia-failover.env.example nvidia-failover.env
-# Edit NVIDIA_API_KEY, OPENROUTER_API_KEY and LITELLM_MASTER_KEY in nvidia-failover.env
-chmod 600 nvidia-failover.env
+cp llm-failover.env.example llm-failover.env
+# Edit NVIDIA_API_KEY, OPENROUTER_API_KEY and LITELLM_MASTER_KEY in llm-failover.env
+chmod 600 llm-failover.env
 ```
 
 `OPENROUTER_API_KEY` is only required if you add `openrouter/...` models to `config.yaml` — NVIDIA-only pools can leave it blank.
@@ -171,7 +171,7 @@ llmfailoverproxy logs
 llmfailoverproxy stop
 ```
 
-`run.sh` automatically detects any virtual environment in the project directory, loads `nvidia-failover.env`, and starts LiteLLM proxy on `127.0.0.1:4000`.
+`run.sh` automatically detects any virtual environment in the project directory, loads `llm-failover.env`, and starts LiteLLM proxy on `127.0.0.1:4000`.
 
 ### 6. Monitor Proxy & Failovers
 

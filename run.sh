@@ -30,10 +30,10 @@ find_litellm_bin() {
 }
 
 load_env() {
-    if [[ -f "$SCRIPT_DIR/nvidia-failover.env" ]]; then
+    if [[ -f "$SCRIPT_DIR/llm-failover.env" ]]; then
         # shellcheck disable=SC1091
         set -a
-        source "$SCRIPT_DIR/nvidia-failover.env"
+        source "$SCRIPT_DIR/llm-failover.env"
         set +a
     fi
 }
