@@ -67,6 +67,7 @@ model_list:
       api_key: os.environ/NVIDIA_API_KEY
       order: 1
 
+  # ORCLI
   - model_name: opencode-main
     litellm_params:
       model: <llm_model_2> # Replace to the LLM Model
