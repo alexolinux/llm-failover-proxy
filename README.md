@@ -18,42 +18,64 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 ## File Structure
 
-- `config.yaml` - Model pool definitions, retry policies, and fallback order
 - `config.yaml.example` - Template for `config.yaml`
-- `llm-failover.env.example` - Template for your API keys (`NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`)
-- `llm-failover.env` - Your actual local environment file (`chmod 600`)
-- `run.sh` - Entrypoint script that auto-detects your virtualenv and runs LiteLLM
-- `opencode.provider.jsonc` - Configuration snippet to merge into `opencode.json`
-- `opencode.provider.jsonc.example` - Template for the above
+- `llm-failover.env.example` - Template for `llm-failover.env` (Required API Key variables)
+- `opencode.provider.jsonc.example` - Template for the above `opencode.provider.jsonc` content
 - `test-models.sh` - Validation script to benchmark latency, tool-calling support, issue warnings, and reorder `config.yaml`
 - `reorder_config.py` - Helper script to safely reorder `config.yaml` prioritizing fastest responsive models
 - `retest-models-slow.sh` - Quick latency probe for large models
+- `run.sh` - Entrypoint script that auto-detects your virtualenv and runs LiteLLM
 
 ---
 
 ## Setup & Quickstart
 
-### 1. Environment Configuration
+Clone this project:
+
+```shell
+https://github.com/alexolinux/llm-failover-proxy.git
+cd llm-failover-proxy
+```
+
+### Environment Configuration
 
 Configure Environment Keys, creating your `llm-failover.env`
 
 ```shell
 cp llm-failover.env.example llm-failover.env
-# Edit NVIDIA_API_KEY, OPENROUTER_API_KEY and LITELLM_MASTER_KEY in llm-failover.env
+# Edit NVIDIA_API_KEY, OPENROUTER_API_KEY and LITELLM_MASTER_KEY in llm-failover.env with your API Keys.
 chmod 600 llm-failover.env
 ```
 
-`OPENROUTER_API_KEY` is only required if you add `openrouter/...` models to `config.yaml` — NVIDIA-only pools can leave it blank.
-
-### 2. Point OpenCode at the Proxy
-
-Copy/Create `opencode.provider.jsonc`
+Create your `config.yaml`
 
 ```shell
-cp opencode.provider.jsonc.example opencode.provider.jsonc
+cp config.yaml.example config.yaml
 ```
 
-Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration (`~/.config/opencode/opencode.jsonc` or local `opencode.jsonc`):
+Add your LLM Models as below:
+
+```shell
+model_list:
+  # NVB
+  - model_name: opencode-main
+    litellm_params:
+      model: <llm_model_1> # Replace to the LLM Model
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+      order: 1
+
+  - model_name: opencode-main
+    litellm_params:
+      model: <llm_model_2> # Replace to the LLM Model
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      order: 2
+```
+
+### Point OpenCode at the Proxy
+
+Edit and merge the contents of `opencode.provider.jsonc` into your OpenCode configuration (`~/.config/opencode/opencode.jsonc` or local `opencode.jsonc`):
 
 ```jsonc
 {
@@ -65,7 +87,7 @@ Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration
       "name": "NVIDIA Build (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "{env:LITELLM_MASTER_KEY}"
+        "apiKey": "{env:LITELLM_MASTER_KEY}" //Or replace for your Key value
       },
       "models": {
         "opencode-main": {
@@ -87,7 +109,7 @@ Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration
       "name": "OpenRouter Build (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "{env:LITELLM_MASTER_KEY}"
+        "apiKey": "{env:LITELLM_MASTER_KEY}" //Or replace for your Key value
       },
       "models": {
         "opencode-main": {
@@ -110,22 +132,28 @@ Merge the contents of `opencode.provider.jsonc` into your OpenCode configuration
 
 Both pools point at the same local proxy, so either `nvidia-pool/opencode-main` or `openrouter-pool/opencode-main` works as the top-level `model` — the proxy routes across the whole fallback group underneath.
 
-### 3. Install LiteLLM into a Virtual Environment
+### Python Virtual Environment
 
 ```shell
-git clone https://github.com/alexolinux/llm-failover-proxy.git
-cd llm-failover-proxy
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Benchmark Models & Auto-Reorder `config.yaml`
+### Benchmark Models & Auto-Reorder `config.yaml`
+
+Run the followin commands to prepare your custom OpenCode LLM Proxy
+
+```shell
+source llm-failover.env
+```
 
 ```shell
 # Preview ranking and proposed config without writing:
-NVIDIA_API_KEY=nvapi-... OPENROUTER_API_KEY=sk-or-... ./test-models.sh --dry-run
+./test-models.sh --dry-run
+```
 
+```shell
 # Run test and automatically update config.yaml with the fastest viable models:
 NVIDIA_API_KEY=nvapi-... OPENROUTER_API_KEY=sk-or-... ./test-models.sh --apply
 ```
