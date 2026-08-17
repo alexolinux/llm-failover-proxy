@@ -18,6 +18,42 @@ APPLY_CONFIG=false
 DRY_RUN=false
 RUN_BURST=false
 
+if [ ! -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+  echo -e "\033[0;31m[ERROR] Project virtualenv not found: $SCRIPT_DIR/.venv\033[0m"
+  echo "Create it with: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+  exit 1
+fi
+
+PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+
+resolve_api_base_for_model() {
+  local model_name="$1"
+  "$PYTHON_BIN" - "$CONFIG_FILE" "$model_name" <<'PY'
+import os
+import sys
+import yaml
+
+config_path = sys.argv[1]
+model_name = sys.argv[2].replace("openai/", "").strip()
+
+try:
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+except Exception:
+    print("https://integrate.api.nvidia.com/v1")
+    raise SystemExit
+
+for entry in cfg.get("model_list", []):
+    params = entry.get("litellm_params", {})
+    candidate = str(params.get("model", "")).replace("openai/", "").strip()
+    if candidate == model_name:
+        print(str(params.get("api_base", "https://integrate.api.nvidia.com/v1")))
+        raise SystemExit
+
+print("https://integrate.api.nvidia.com/v1")
+PY
+}
+
 show_help() {
   cat << 'EOF'
 Usage:
@@ -67,16 +103,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load environment variables if not present in the current shell.
-if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/llm-failover.env" ]; then
+# Load the project-managed environment file as the single source of truth.
+if [ -f "$SCRIPT_DIR/llm-failover.env" ]; then
   set -a
   source "$SCRIPT_DIR/llm-failover.env" 2>/dev/null || true
   set +a
 fi
 
 if [ -z "${NVIDIA_API_KEY:-}" ]; then
-  echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY environment variable is not set.\033[0m"
-  echo "Please set it (e.g. export NVIDIA_API_KEY=nvapi-...) or configure llm-failover.env"
+  echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY is not set in llm-failover.env.\033[0m"
+  echo "Load your project environment file or export NVIDIA_API_KEY before running this script."
   exit 1
 fi
 
@@ -106,19 +142,22 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 MODELS=()
 while IFS= read -r model_name; do
   [ -n "$model_name" ] && MODELS+=("$model_name")
-done < <(python3 - << EOF
-import yaml, sys
+done < <(CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
+import os
+import sys
+import yaml
+
 try:
-    with open('$CONFIG_FILE', 'r', encoding='utf-8') as f:
-        cfg = yaml.safe_load(f)
-    for entry in cfg.get('model_list', []):
-        m = entry.get('litellm_params', {}).get('model', '')
-        clean_m = m.replace('openai/', '').strip()
-        if clean_m:
-            print(clean_m)
-except Exception as e:
+    with open(os.environ["CONFIG_FILE"], "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    for entry in cfg.get("model_list", []):
+        model = entry.get("litellm_params", {}).get("model", "")
+        clean_model = model.replace("openai/", "").strip()
+        if clean_model:
+            print(clean_model)
+except Exception:
     sys.exit(1)
-EOF
+PY
 )
 
 if [ "${#MODELS[@]}" -eq 0 ]; then
@@ -141,26 +180,37 @@ for m in "${MODELS[@]}"; do
   safe_name=$(echo "$m" | tr '/' '_')
   printf "  %-44s " "$m"
 
+  api_base_for_model=$(resolve_api_base_for_model "$m")
+  if [[ "$api_base_for_model" == *"openrouter.ai"* ]] || [[ "$m" == openrouter/* ]]; then
+    api_base="$api_base_for_model"
+    if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+      echo -e "\033[0;31m[ERROR] OPENROUTER_API_KEY is not set in llm-failover.env for model: $m\033[0m"
+      exit 1
+    fi
+    api_key="${OPENROUTER_API_KEY}"
+  else
+    api_base="https://integrate.api.nvidia.com/v1"
+    api_key="${NVIDIA_API_KEY}"
+  fi
+
   # Execute 2 deterministic probes with retry on transient 429 via Python helper
-  probe_result=$(python3 - << EOF
-import json, requests, time, sys
+  probe_result=$(MODEL="$m" MAX_TIME="$MAX_TIME" API_BASE="$api_base" API_KEY="$api_key" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+import sys
+import time
 
-api_key = "$NVIDIA_API_KEY"
-model = "$m"
-# Determine provider and API endpoint based on model name
-if model.startswith("openrouter/"):
-    api_base = "https://openrouter.ai/api/v1"
-    api_key = "$OPENROUTER_API_KEY"
-    url = f"{api_base}/chat/completions"
-    auth_header = "Authorization"
-else:
-    api_base = "https://integrate.api.nvidia.com/v1"
-    url = f"{api_base}/chat/completions"
-    auth_header = "Authorization"
+import requests
 
+model = os.environ["MODEL"]
+max_time = float(os.environ["MAX_TIME"])
+api_base = os.environ["API_BASE"]
+api_key = os.environ["API_KEY"]
+
+url = f"{api_base}/chat/completions"
 headers = {
-    auth_header: f"Bearer {api_key}",
-    "Content-Type": "application/json"
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json",
 }
 
 payload = {
@@ -174,12 +224,12 @@ payload = {
             "parameters": {
                 "type": "object",
                 "properties": {"city": {"type": "string"}},
-                "required": ["city"]
-            }
-        }
+                "required": ["city"],
+            },
+        },
     }],
     "temperature": 0.0,
-    "max_tokens": 512
+    "max_tokens": 512,
 }
 
 latencies = []
@@ -189,7 +239,7 @@ tool_successes = 0
 for probe in range(2):
     t0 = time.time()
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=$MAX_TIME)
+        r = requests.post(url, headers=headers, json=payload, timeout=max_time)
         elapsed = time.time() - t0
         latencies.append(elapsed)
         statuses.append(r.status_code)
@@ -199,17 +249,14 @@ for probe in range(2):
             if msg.get("tool_calls"):
                 tool_successes += 1
         elif r.status_code == 429 and probe == 0:
-            # Transient 429 cooldown probe retry
             time.sleep(1.5)
-    except Exception as e:
+    except Exception:
         latencies.append(99.0)
         statuses.append(0)
     time.sleep(0.3)
 
 avg_latency = sum(latencies) / len(latencies) if latencies else 99.0
 
-status = "OK"
-note = ""
 if tool_successes == 2:
     status = "OK"
     tool_support = "YES"
@@ -238,16 +285,16 @@ result = {
     "tool_successes": tool_successes,
     "latency": round(avg_latency, 2),
     "statuses": statuses,
-    "note": note
+    "note": note,
 }
 print(json.dumps(result))
-EOF
+PY
 )
 
   # Parse result in bash for live status line
-  status=$(python3 -c "import json, sys; d=json.loads(sys.argv[1]); print(d['status'])" "$probe_result")
-  latency=$(python3 -c "import json, sys; d=json.loads(sys.argv[1]); print(d['latency'])" "$probe_result")
-  tools=$(python3 -c "import json, sys; d=json.loads(sys.argv[1]); print(d['tool_support'])" "$probe_result")
+  status=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d['status'])" "$probe_result")
+  latency=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d['latency'])" "$probe_result")
+  tools=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d['tool_support'])" "$probe_result")
 
   if [ "$status" = "OK" ]; then
     is_slow=$(awk -v lat="$latency" -v slow="$SLOW_THRESHOLD" 'BEGIN {print (lat >= slow) ? "1" : "0"}')
@@ -267,7 +314,7 @@ EOF
   fi
 
   # Append to results JSON
-  python3 - << EOF
+  "$PYTHON_BIN" - << EOF
 import json
 with open('$RESULTS_JSON', 'r', encoding='utf-8') as f:
     data = json.load(f)
@@ -334,7 +381,7 @@ echo
 echo -e "${BOLD}[Step 2/2] Consolidated Model Decision Dashboard${RESET}"
 
 # Render formatted table via Python
-python3 - << EOF
+"$PYTHON_BIN" - << EOF
 import json
 
 with open('$RESULTS_JSON', 'r', encoding='utf-8') as f:
@@ -431,12 +478,12 @@ echo -e "${BOLD}${BLUE}=========================================================
 
 if [ "$APPLY_CONFIG" = true ]; then
   echo -e "${GREEN}Applying automated optimal ordering to $CONFIG_FILE...${RESET}"
-  python3 "$SCRIPT_DIR/reorder_config.py" --config "$CONFIG_FILE" --results "$RESULTS_JSON" --apply
+  "$PYTHON_BIN" "$SCRIPT_DIR/reorder_config.py" --config "$CONFIG_FILE" --results "$RESULTS_JSON" --apply
   echo -e "\n${BOLD}Done! To start the llm-failover-proxy proxy, run:${RESET}"
   echo -e "  ${CYAN}./run.sh start${RESET}"
 elif [ "$DRY_RUN" = true ]; then
   echo -e "${CYAN}Previewing proposed config.yaml update (--dry-run)...${RESET}"
-  python3 "$SCRIPT_DIR/reorder_config.py" --config "$CONFIG_FILE" --results "$RESULTS_JSON" --dry-run
+  "$PYTHON_BIN" "$SCRIPT_DIR/reorder_config.py" --config "$CONFIG_FILE" --results "$RESULTS_JSON" --dry-run
 else
   echo -e "To automatically reorder ${BOLD}$CONFIG_FILE${RESET} with verified models prioritized by speed:"
   echo -e "  ${CYAN}./test-models.sh --apply${RESET}\n"

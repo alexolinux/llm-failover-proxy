@@ -12,7 +12,7 @@ We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
 - Automatic failover: On `429 Too Many Requests` or `503 Service Unavailable`, LiteLLM puts the active deployment on cooldown and retries with the next deployment in the fallback pool inside the **same** request — OpenCode never sees the error.
 - Lightweight & Portable: Runs locally under your user account without requiring root privileges or complex daemon setups.
-- **Multi-provider**: The pool can mix NVIDIA Build free-tier models and OpenRouter free models in one fallback group. `test-models.sh` detects the provider per model — entries whose model name starts with `openrouter/` are probed against `https://openrouter.ai/api/v1` with `OPENROUTER_API_KEY`; everything else is probed against NVIDIA's endpoint with `NVIDIA_API_KEY`.
+- **Multi-provider**: The pool can mix NVIDIA Build free-tier models and OpenRouter free models in one fallback group. `test-models.sh` resolves the provider from the configured `api_base` and the model ID, then probes the correct endpoint with the matching `OPENROUTER_API_KEY` or `NVIDIA_API_KEY`; this avoids relying on a brittle `openrouter/` string prefix alone.
 
 ---
 
@@ -87,7 +87,7 @@ Each entry in `model_list` shares `model_name: "opencode-main"` (that's what gro
 ```
 
 - NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY` (the `model` may or may not carry an `openai/` prefix).
-- OpenRouter models: `model` must start with `openrouter/`, use `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
+- OpenRouter models: set `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`; the validator resolves the provider from the endpoint and model ID, so plain OpenRouter model IDs and legacy `openrouter/` prefixed IDs are both accepted.
 - `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
 
 ### Point OpenCode at the Proxy
