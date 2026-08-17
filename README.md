@@ -47,6 +47,8 @@ cp llm-failover.env.example llm-failover.env
 chmod 600 llm-failover.env
 ```
 
+### Adding a model to the pool
+
 Create your `config.yaml`
 
 ```shell
@@ -72,6 +74,21 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY
       order: 2
 ```
+
+Each entry in `model_list` shares `model_name: "opencode-main"` (that's what groups them for failover) and sets its own `litellm_params`:
+
+```yaml
+  - model_name: opencode-main
+    litellm_params:
+      model: openrouter/anthropic/claude-3.5-haiku    # openrouter/ prefix -> OpenRouter endpoint
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      order: 3
+```
+
+- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY` (the `model` may or may not carry an `openai/` prefix).
+- OpenRouter models: `model` must start with `openrouter/`, use `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
+- `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
 
 ### Point OpenCode at the Proxy
 
@@ -155,7 +172,7 @@ source llm-failover.env
 
 ```shell
 # Run test and automatically update config.yaml with the fastest viable models:
-NVIDIA_API_KEY=nvapi-... OPENROUTER_API_KEY=sk-or-... ./test-models.sh --apply
+./test-models.sh --apply
 ```
 
 Flags: `-c, --config <path>` (default `./config.yaml`), `-a, --apply`, `-d, --dry-run`, `-b, --burst` (10-request concurrency rate-limit isolation test), `-h, --help`.
@@ -214,23 +231,6 @@ When a rate-limit (429) or overload (503) occurs, LiteLLM logs the cooldown and 
 - `cooldown_time: 60`: Number of seconds a rate-limited model is benched before retry.
 - `allowed_fails_policy.RateLimitErrorAllowedFails: 1`: Immediately bench a model on the first 429/503 rather than wasting retries on a struggling backend.
 - `request_timeout: 45`: Fail over from a hung or lagging model before the client times out.
-
-### Adding a model to the pool
-
-Each entry in `model_list` shares `model_name: "opencode-main"` (that's what groups them for failover) and sets its own `litellm_params`:
-
-```yaml
-  - model_name: opencode-main
-    litellm_params:
-      model: openrouter/anthropic/claude-3.5-haiku    # openrouter/ prefix -> OpenRouter endpoint
-      api_base: https://openrouter.ai/api/v1
-      api_key: os.environ/OPENROUTER_API_KEY
-      order: 7
-```
-
-- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY` (the `model` may or may not carry an `openai/` prefix).
-- OpenRouter models: `model` must start with `openrouter/`, use `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
-- `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
 
 ## Author
 
