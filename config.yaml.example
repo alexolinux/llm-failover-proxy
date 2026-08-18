@@ -11,19 +11,27 @@
 
 # Create a config.yaml from this example file.
 # The list can be expanded with other LLMs by adding more entries to the model_list.
+#
+# IMPORTANT: every `model:` value MUST be prefixed with `openai/` (e.g.
+# `openai/meta/llama-3.1-8b-instruct`). This forces LiteLLM to treat the entry as a
+# plain OpenAI-compatible endpoint and to honor the `api_base` you set. Without the
+# `openai/` prefix, LiteLLM routes provider-named models (e.g. `cohere/...`,
+# `nvidia/...`) through their *native* provider handlers, which ignore `api_base`
+# and return the provider's website HTML — surfacing as
+# `Error parsing chunk: Expecting value ...` during streaming.
 
 model_list:
 
   - model_name: opencode-main
     litellm_params:
-      model: <llm_model_1>
+      model: openai/<llm_model_1>
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
       order: 1
 
   - model_name: opencode-main
     litellm_params:
-      model: <llm_model_2>
+      model: openai/<llm_model_2>
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       order: 2

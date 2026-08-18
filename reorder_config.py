@@ -45,6 +45,13 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
     # Genuinely excluded: UNSTABLE (flaky tools), NO_TOOL, CURL_FAIL, or unknown errors
     excluded = [r for r in results if r.get("status") not in ("OK", "HTTP_429")]
 
+    # Auto-discard models with 0/2 tool calls (NO_TOOL) to prevent broken sessions
+    if any(r.get("status") == "NO_TOOL" for r in results):
+        # Log which models are being discarded due to tool incompatibility
+        no_tool_models = [r for r in results if r.get("status") == "NO_TOOL"]
+        for r in no_tool_models:
+            print(f"[DISCARD] {r['model']} - INCOMPATIBLE (No tool support)")
+
     # Map existing config entries by normalized model name
     existing_entries = {}
     for entry in config.get("model_list", []):

@@ -87,8 +87,9 @@ Each entry in `model_list` shares `model_name: "opencode-main"` (that's what gro
       order: 3
 ```
 
-- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY` (the `model` may or may not carry an `openai/` prefix).
-- OpenRouter models: set `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`; the validator resolves the provider from the endpoint and model ID, so plain OpenRouter model IDs and legacy `openrouter/` prefixed IDs are both accepted.
+- **Every `model:` value MUST be prefixed with `openai/`** (e.g. `openai/nvidia/llama-3.3-nemotron-super-49b-v1`, `openai/cohere/north-mini-code:free`, `openai/openrouter/free`). This forces LiteLLM to treat each entry as a plain OpenAI-compatible endpoint that honors the `api_base` you set. **Without the `openai/` prefix**, LiteLLM routes provider-named models (e.g. `cohere/...`, `nvidia/...`) through their *native* provider handlers, which ignore `api_base`, hit the provider's website, and return HTML — surfacing at runtime as `Error parsing chunk: Expecting value ...` during streaming.
+- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY`.
+- OpenRouter models: set `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
 - `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
 
 ### Point OpenCode at the Proxy
