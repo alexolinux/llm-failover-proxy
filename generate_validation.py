@@ -82,40 +82,18 @@ def main():
         # Conteúdo base se arquivo não existir
         current_content = '''{
   "$schema": "https://opencode.ai/config.json",
-  "model": "nvidia-pool/opencode-main",
+  "model": "llm-free-pool/opencode-main",
   "provider": {
-    "nvidia-pool": {
+    "llm-free-pool": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "NVIDIA Build (auto-failover)",
+      "name": "LLM Free Pool (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
         "apiKey": "sk-litellm-479cbb6d8cecdbf8efa132b68548fac2"
       },
       "models": {
         "opencode-main": {
-          "name": "NVIDIA free pool",
-          "capabilities": {
-            "tools": true,
-            "input": ["text"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 65536,
-            "output": 8192
-          }
-        }
-      }
-    },
-    "openrouter-pool": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "OpenRouter Build (auto-failover)",
-      "options": {
-        "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "sk-litellm-479cbb6d8cecdbf8efa132b68548fac2"
-      },
-      "models": {
-        "opencode-main": {
-          "name": "OpenRouter free pool",
+          "name": "LLM free pool",
           "capabilities": {
             "tools": true,
             "input": ["text"],
@@ -136,7 +114,7 @@ def main():
         config_json = json.loads(current_content)
     except json.JSONDecodeError:
         # Se não for JSON válido, começa do zero
-        config_json = {"model": "nvidia-pool/opencode-main", "provider": {}}
+        config_json = {"model": "llm-free-pool/opencode-main", "provider": {}}
     
     # Gera as regras de validação
     validation_rules = generate_validation_rules(config_path)

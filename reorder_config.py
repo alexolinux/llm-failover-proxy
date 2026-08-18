@@ -21,6 +21,14 @@ import yaml
 from datetime import datetime
 
 
+def ensure_openai_prefix(model: str) -> str:
+    """Forces the `openai/` prefix so LiteLLM honors `api_base` instead of
+    routing through a native provider handler (which ignores api_base and
+    breaks mixed-provider pools like NVIDIA + OpenRouter)."""
+    clean = model.replace("openai/", "").strip()
+    return f"openai/{clean}" if clean else model
+
+
 def load_config(config_path: str) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -69,6 +77,7 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
         entry = existing_entries.get(model_name)
         if entry:
             entry["litellm_params"]["order"] = order_idx
+            entry["litellm_params"]["model"] = ensure_openai_prefix(entry["litellm_params"].get("model", ""))
             new_model_list.append(entry)
         else:
             new_model_list.append({
@@ -90,6 +99,7 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
         entry = existing_entries.get(model_name)
         if entry:
             entry["litellm_params"]["order"] = order_idx
+            entry["litellm_params"]["model"] = ensure_openai_prefix(entry["litellm_params"].get("model", ""))
             new_model_list.append(entry)
         else:
             new_model_list.append({
@@ -115,7 +125,7 @@ def format_commented_block(entry: dict, status: str, note: str) -> str:
         f"  # [EXCLUDED: {status}] {note}",
         f"  # - model_name: {entry.get('model_name', 'opencode-main')}",
         f"  #   litellm_params:",
-        f"  #     model: {params.get('model', '')}",
+        f"  #     model: {ensure_openai_prefix(params.get('model', ''))}",
         f"  #     api_base: {params.get('api_base', 'https://integrate.api.nvidia.com/v1')}",
         f"  #     api_key: {params.get('api_key', 'os.environ/NVIDIA_API_KEY')}",
         f"  #     order: {params.get('order', '')}",
@@ -191,7 +201,7 @@ model_list:
         body_models.append(
             f"  - model_name: {entry.get('model_name', 'opencode-main')}\n"
             f"    litellm_params:\n"
-            f"      model: {params.get('model', '')}\n"
+            f"      model: {ensure_openai_prefix(params.get('model', ''))}\n"
             f"      api_base: {params.get('api_base', 'https://integrate.api.nvidia.com/v1')}\n"
             f"      api_key: {params.get('api_key', 'os.environ/NVIDIA_API_KEY')}\n"
             f"      order: {params.get('order', 1)}"

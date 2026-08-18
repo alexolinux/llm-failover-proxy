@@ -121,11 +121,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 1
 fi
 
-CONNECT_TIMEOUT=8
-MAX_TIME=30
-SLOW_THRESHOLD=10.0
-
-# Terminal colors
+# ── Pre-flight config.yaml structure validation ──────────────────────────────
+# Providers frequently add/remove free models, so a broken entry (missing
+# `openai/` prefix, wrong api_base, missing key) must be caught BEFORE the
+# benchmark, otherwise LiteLLM will fail at runtime (e.g. "404 page not found").
 BOLD="\033[1m"
 GREEN="\033[0;32m"
 YELLOW="\033[0;33m"
@@ -134,6 +133,103 @@ CYAN="\033[0;36m"
 BLUE="\033[0;34m"
 DIM="\033[2m"
 RESET="\033[0m"
+
+echo -e "${BOLD}${BLUE}[Step 0/2] Validating $CONFIG_FILE structure...${RESET}"
+
+"$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
+import os
+import sys
+import yaml
+
+config_path = sys.argv[1]
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = yaml.safe_load(f) or {}
+
+entries = cfg.get("model_list", [])
+issues = []
+errors = 0
+
+KNOWN_BASES = {
+    "https://integrate.api.nvidia.com/v1": "NVIDIA Build",
+    "https://openrouter.ai/api/v1": "OpenRouter",
+}
+
+for i, entry in enumerate(entries, 1):
+    params = entry.get("litellm_params", {})
+    model = str(params.get("model", "") or "")
+    api_base = str(params.get("api_base", "") or "")
+    api_key = str(params.get("api_key", "") or "")
+    group = entry.get("model_name", "")
+
+    if not model:
+        errors += 1
+        issues.append(f"[ERROR] model_list[{i}]: missing 'model'.")
+        continue
+
+    if not model.startswith("openai/"):
+        errors += 1
+        issues.append(
+            f"[ERROR] model_list[{i}]: model '{model}' is missing the required "
+            f"'openai/' prefix. Without it LiteLLM routes through the native provider "
+            f"handler and IGNORES 'api_base' — breaking mixed NVIDIA+OpenRouter pools "
+            f"(runtime symptom: '404 page not found'). Fix: '{model}'.replace -> "
+            f"'openai/{model}'."
+        )
+
+    if api_base and api_base not in KNOWN_BASES:
+        issues.append(
+            f"[WARN] model_list[{i}]: api_base '{api_base}' is not a recognized "
+            f"free-tier endpoint (known: {', '.join(KNOWN_BASES)})."
+        )
+    if not api_base:
+        errors += 1
+        issues.append(f"[ERROR] model_list[{i}]: missing 'api_base'.")
+
+    if api_key.startswith("os.environ/"):
+        env_name = api_key.split("/", 1)[1]
+        if not os.environ.get(env_name):
+            errors += 1
+            issues.append(
+                f"[ERROR] model_list[{i}]: 'api_key' references os.environ/{env_name} "
+                f"which is NOT set. Add it to llm-failover.env."
+            )
+    elif not api_key:
+        errors += 1
+        issues.append(f"[ERROR] model_list[{i}]: missing 'api_key'.")
+
+groups = {e.get("model_name", "") for e in entries if e.get("model_name")}
+if len(groups) > 1:
+    issues.append(
+        f"[WARN] model_list mixes {len(groups)} model_name groups "
+        f"({sorted(groups)}). Failover only happens between entries sharing the "
+        f"SAME model_name."
+    )
+
+seen = {}
+for e in entries:
+    m = str(e.get("litellm_params", {}).get("model", "")).replace("openai/", "").strip()
+    seen[m] = seen.get(m, 0) + 1
+dups = [m for m, c in seen.items() if c > 1]
+if dups:
+    issues.append(f"[WARN] duplicate active models in the pool: {dups}")
+
+if issues:
+    print("\n  " + "─" * 60)
+    for msg in issues:
+        print(f"  {msg}")
+    print("  " + "─" * 60 + "\n")
+
+if errors:
+    print(f"[VALIDATION FAILED] {errors} critical issue(s) in {config_path}. Fix them before benchmarking.", file=sys.stderr)
+    sys.exit(1)
+print("[OK] config.yaml structure validation passed.")
+PY
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+CONNECT_TIMEOUT=8
+MAX_TIME=30
+SLOW_THRESHOLD=10.0
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -273,6 +369,14 @@ elif all(s == 429 for s in statuses):
     status = "HTTP_429"
     tool_support = "N/A"
     note = "Rate limit reached (429)"
+elif any(s in (401, 403) for s in statuses):
+    status = f"HTTP_{statuses[0]}"
+    tool_support = "N/A"
+    note = f"HTTP status {statuses} — API key rejected or model is not in this provider's free tier"
+elif statuses[0] == 404:
+    status = "HTTP_404"
+    tool_support = "N/A"
+    note = f"HTTP status {statuses} — model no longer available: removed or renamed by the provider"
 else:
     status = f"HTTP_{statuses[0]}"
     tool_support = "N/A"
