@@ -1,36 +1,75 @@
-# litellm proxy config — pools NVIDIA Build free-tier models behind one
-# OpenAI-compatible endpoint, with automatic failover on 429 / 503 / timeout.
+# ==============================================================================
+# llm-failover-proxy — config.yaml template
+# ------------------------------------------------------------------------------
+# PURPOSE
+#   One OpenAI-compatible endpoint (llm-free-pool) that mixes NVIDIA Build and
+#   OpenRouter FREE models in a SINGLE fallback group. When a provider rate-limits
+#   (429) or overloads (503), LiteLLM cools that deployment down and retries the
+#   next ordered model in the SAME request — opencode never sees the failure.
 #
-# All entries share model_name: "opencode-main" — that's what makes them
-# a fallback *group*. `order` sets priority. On a 429/503, litellm cools down
-# that deployment and retries the next ordered model inside the SAME request —
-# opencode never sees the failure.
+# HOW FAILOVER GROUPS WORK
+#   Every entry that shares the same `model_name` (here "opencode-main") is part
+#   of one failover group. `order: N` sets priority. So the pool below is ONE
+#   group mixing NVIDIA and OpenRouter models; the proxy routes across all of them.
 #
-# Auto-reordered by test-models.sh on 2026-08-15 14:12
-# Reorder / trim this list based on what you observe in test-models.sh.
-
-# Create a config.yaml from this example file.
-# The list can be expanded with other LLMs by adding more entries to the model_list.
+# ADDING / REMOVING MODELS
+#   Free-tier model lists change constantly on both providers. Before editing:
+#     1. NVIDIA Build  -> https://integrate.api.nvidia.com/v1  (free models listed
+#        under "Free Tier" in the NVIDIA Build dashboard).
+#     2. OpenRouter    -> https://openrouter.ai/models?order=top-weekly&q=free
+#        (filter by `:free` suffix).
+#   Then re-run `./test-models.sh --apply` to reorder the pool by measured latency.
+#   The script VALIDATES this file (openai/ prefix, api_base, api_key) before
+#   benchmarking and fails fast if an entry is structurally broken.
+#
+# CRITICAL — the `openai/` prefix
+#   EVERY `model:` value MUST start with `openai/`. This forces LiteLLM to treat
+#   the entry as a plain OpenAI-compatible endpoint and to honor the `api_base`
+#   you set. WITHOUT it, LiteLLM routes through the *native* provider handler
+#   (e.g. `nvidia/...`), which IGNORES `api_base` — an OpenRouter entry like
+#   `nvidia/nemotron-3-ultra-550b-a55b:free` gets sent to NVIDIA instead and the
+#   runtime symptom is `NotFoundError: ... 404 page not found`.
+#   The `openai/` prefix is stripped before the model ID is sent to the provider.
+# ==============================================================================
 
 model_list:
 
+  # ── NVIDIA Build free tier ────────────────────────────────────────────────
+  # api_base: https://integrate.api.nvidia.com/v1
+  # api_key : os.environ/NVIDIA_API_KEY (defined in llm-failover.env)
+  # Model ID example: check the NVIDIA Build dashboard for the current free list.
   - model_name: opencode-main
     litellm_params:
-      model: <llm_model_1>
+      model: openai/nvidia/llama-3.3-nemotron-super-49b-v1
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
       order: 1
 
+  # ── OpenRouter free tier (note the `:free` suffix) ────────────────────────
+  # api_base: https://openrouter.ai/api/v1
+  # api_key : os.environ/OPENROUTER_API_KEY (defined in llm-failover.env)
   - model_name: opencode-main
     litellm_params:
-      model: <llm_model_2>
+      model: openai/cohere/north-mini-code:free
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       order: 2
 
+  # ── Another OpenRouter free model in the same group ───────────────────────
+  - model_name: opencode-main
+    litellm_params:
+      model: openai/meta/llama-3.1-8b-instruct:free
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      order: 3
+
+  # ── Add more entries as needed; keep `model_name` identical to stay in the
+  #    same failover group, use `openai/` on every model, and bump `order`. ───
+
+# ── Router tuning ─────────────────────────────────────────────────────────────
 router_settings:
-  routing_strategy: simple-shuffle
-  cooldown_time: 60
+  routing_strategy: simple-shuffle   # respects `order` and balances requests
+  cooldown_time: 60                  # seconds a rate-limited model is benched
   allowed_fails: 1
   num_retries: 3
   retry_policy:
@@ -42,10 +81,12 @@ router_settings:
     InternalServerErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
 
+# ── LiteLLM settings ──────────────────────────────────────────────────────────
 litellm_settings:
-  drop_params: true
-  request_timeout: 45
+  drop_params: true          # ignore unsupported params instead of failing
+  request_timeout: 45        # fail over from a hung model before the client times out
   set_verbose: false
 
+# ── Global ────────────────────────────────────────────────────────────────────
 general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY
+  master_key: os.environ/LITELLM_MASTER_KEY   # must match opencode's apiKey

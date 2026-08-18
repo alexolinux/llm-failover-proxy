@@ -57,38 +57,39 @@ cp config.yaml.example config.yaml
 
 Add your LLM Models as below:
 
-```shell
+```yaml
 model_list:
-  # NVB
+  # NVIDIA Build free tier
   - model_name: opencode-main
     litellm_params:
-      model: <llm_model_1> # Replace to the LLM Model
+      model: openai/<llm_model_1> # Replace with the LLM Model (must keep the openai/ prefix)
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
       order: 1
 
-  # ORCLI
+  # OpenRouter free tier
   - model_name: opencode-main
     litellm_params:
-      model: <llm_model_2> # Replace to the LLM Model
+      model: openai/<llm_model_2> # Replace with the LLM Model (must keep the openai/ prefix)
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       order: 2
 ```
 
-Each entry in `model_list` shares `model_name: "opencode-main"` (that's what groups them for failover) and sets its own `litellm_params`:
+Each entry in `model_list` shares `model_name: "opencode-main"` (that's what groups them into ONE failover pool covering both providers) and sets its own `litellm_params`:
 
 ```yaml
   - model_name: opencode-main
     litellm_params:
-      model: openrouter/anthropic/claude-3.5-haiku    # openrouter/ prefix -> OpenRouter endpoint
+      model: openai/anthropic/claude-3.5-haiku    # openai/ prefix -> honors api_base -> OpenRouter
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       order: 3
 ```
 
-- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY` (the `model` may or may not carry an `openai/` prefix).
-- OpenRouter models: set `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`; the validator resolves the provider from the endpoint and model ID, so plain OpenRouter model IDs and legacy `openrouter/` prefixed IDs are both accepted.
+- **Every `model:` value MUST be prefixed with `openai/`** (e.g. `openai/nvidia/llama-3.3-nemotron-super-49b-v1`, `openai/cohere/north-mini-code:free`, `openai/openrouter/free`). This forces LiteLLM to treat each entry as a plain OpenAI-compatible endpoint that honors the `api_base` you set. **Without the `openai/` prefix**, LiteLLM routes provider-named models (e.g. `cohere/...`, `nvidia/...`) through their *native* provider handlers, which ignore `api_base`, hit the provider's website, and return HTML — surfacing at runtime as `Error parsing chunk: Expecting value ...` during streaming.
+- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY`.
+- OpenRouter models: set `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
 - `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
 
 ### Point OpenCode at the Proxy
@@ -98,40 +99,18 @@ Edit and merge the contents of `opencode.provider.jsonc` into your OpenCode conf
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "nvidia-pool/opencode-main",
+  "model": "llm-free-pool/opencode-main",
   "provider": {
-    "nvidia-pool": {
+    "llm-free-pool": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "NVIDIA Build (auto-failover)",
+      "name": "LLM Free Pool (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
         "apiKey": "{env:LITELLM_MASTER_KEY}" //Or replace for your Key value
       },
       "models": {
         "opencode-main": {
-          "name": "NVIDIA free pool",
-          "capabilities": {
-            "tools": true,
-            "input": ["text"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 65536,
-            "output": 8192
-          }
-        }
-      }
-    },
-    "openrouter-pool": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "OpenRouter Build (auto-failover)",
-      "options": {
-        "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "{env:LITELLM_MASTER_KEY}" //Or replace for your Key value
-      },
-      "models": {
-        "opencode-main": {
-          "name": "OpenRouter free pool",
+          "name": "LLM free pool",
           "capabilities": {
             "tools": true,
             "input": ["text"],
@@ -148,7 +127,7 @@ Edit and merge the contents of `opencode.provider.jsonc` into your OpenCode conf
 }
 ```
 
-Both pools point at the same local proxy, so either `nvidia-pool/opencode-main` or `openrouter-pool/opencode-main` works as the top-level `model` — the proxy routes across the whole fallback group underneath.
+A single pool `llm-free-pool` covers both NVIDIA Build and OpenRouter free models — the proxy routes across the whole fallback group (all `model_list` entries sharing `model_name: opencode-main`) underneath.
 
 ### Python Virtual Environment
 
@@ -180,13 +159,14 @@ Flags: `-c, --config <path>` (default `./config.yaml`), `-a, --apply`, `-d, --dr
 
 This script:
 
+0. **Validates `config.yaml` structure** (before benchmarking): checks every active entry for the required `openai/` prefix, a known free-tier `api_base`, and a set `api_key` env var — and fails fast with a diagnostic if the pool would break LiteLLM at runtime (e.g. the `404 page not found` caused by a missing `openai/` prefix on an OpenRouter entry).
 1. **Verifies Tool-Calling Support**: Identifies models that properly support OpenAI-compatible function calling (crucial for OpenCode editing/terminal tools).
 2. **Measures Precise Latency**: Measures decimal response time and ranks models from fastest to slowest.
 3. **Issues Usability Warnings**:
    - 🔴 **Incompatible (`NO-TOOL`)**: Models that return text but ignore tool calls are flagged for exclusion.
-   - 🔴 **Inaccessible / Error (`HTTP 4xx/5xx`)**: Offline or failing models.
+   - 🔴 **Inaccessible / Error (`HTTP 4xx/5xx`)**: Offline or failing models — a `404` notes the model may have been removed or renamed by the provider (free model lists change often), and a `401/403` notes the key was rejected or the model left the free tier.
    - 🟡 **High Latency Alert (`> 10s`)**: Warns about sluggish models and demotes them to lower priority.
-4. **Auto-Reorders `config.yaml`** (with `--apply`): Automatically creates a backup (`config.yaml.bak`) and updates `order: 1..N` prioritizing the most responsive verified models. Rate-limited models (`429`) are kept active at the end of the pool; unstable/incompatible models are commented out with a diagnostic note — **commented-out models are never deleted**, they stay in the file ready to be un-commented or re-tested later.
+4. **Auto-Reorders `config.yaml`** (with `--apply`): Automatically creates a backup (`config.yaml.bak`) and updates `order: 1..N` prioritizing the most responsive verified models. Rate-limited models (`429`) are kept active at the end of the pool; unstable/incompatible models are commented out with a diagnostic note — **commented-out models are never deleted**, they stay in the file ready to be un-commented or re-tested later. The `openai/` prefix is preserved on every reorder.
 
 ### 5. Start & Control the Proxy
 
