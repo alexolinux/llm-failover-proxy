@@ -40,17 +40,22 @@ try:
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 except Exception:
-    print("https://integrate.api.nvidia.com/v1")
+    print("https://integrate.api.nvidia.com/v1|NVIDIA")
     raise SystemExit
 
 for entry in cfg.get("model_list", []):
     params = entry.get("litellm_params", {})
     candidate = str(params.get("model", "")).replace("openai/", "").strip()
     if candidate == model_name:
-        print(str(params.get("api_base", "https://integrate.api.nvidia.com/v1")))
+        api_base = str(params.get("api_base", "https://integrate.api.nvidia.com/v1"))
+        if "openrouter.ai" in api_base:
+            provider = "OPENROUTER"
+        else:
+            provider = "NVIDIA"
+        print(f"{api_base}|{provider}")
         raise SystemExit
 
-print("https://integrate.api.nvidia.com/v1")
+print("https://integrate.api.nvidia.com/v1|NVIDIA")
 PY
 }
 
@@ -104,11 +109,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Load the project-managed environment file as the single source of truth.
-if [ -f "$SCRIPT_DIR/llm-failover.env" ]; then
-  set -a
-  source "$SCRIPT_DIR/llm-failover.env" 2>/dev/null || true
-  set +a
-fi
+# Supports both llm-failover.env (project standard) and .env (common convention)
+for env_file in "$SCRIPT_DIR/llm-failover.env" "$SCRIPT_DIR/.env"; do
+  if [ -f "$env_file" ]; then
+    set -a
+    source "$env_file" 2>/dev/null || true
+    set +a
+    break
+  fi
+done
 
 if [ -z "${NVIDIA_API_KEY:-}" ]; then
   echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY is not set in llm-failover.env.\033[0m"
@@ -276,7 +285,9 @@ for m in "${MODELS[@]}"; do
   safe_name=$(echo "$m" | tr '/' '_')
   printf "  %-44s " "$m"
 
-  api_base_for_model=$(resolve_api_base_for_model "$m")
+  api_base_provider=$(resolve_api_base_for_model "$m")
+  api_base_for_model="${api_base_provider%%|*}"
+  provider_label="${api_base_provider##*|}"
   if [[ "$api_base_for_model" == *"openrouter.ai"* ]] || [[ "$m" == openrouter/* ]]; then
     api_base="$api_base_for_model"
     if [ -z "${OPENROUTER_API_KEY:-}" ]; then
@@ -290,7 +301,7 @@ for m in "${MODELS[@]}"; do
   fi
 
   # Execute 2 deterministic probes with retry on transient 429 via Python helper
-  probe_result=$(MODEL="$m" MAX_TIME="$MAX_TIME" API_BASE="$api_base" API_KEY="$api_key" "$PYTHON_BIN" - <<'PY'
+  probe_result=$(MODEL="$m" MAX_TIME="$MAX_TIME" API_BASE="$api_base" API_KEY="$api_key" PROVIDER_LABEL="$provider_label" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 import sys
@@ -302,6 +313,7 @@ model = os.environ["MODEL"]
 max_time = float(os.environ["MAX_TIME"])
 api_base = os.environ["API_BASE"]
 api_key = os.environ["API_KEY"]
+provider_label = os.environ.get("PROVIDER_LABEL", "UNKNOWN")
 
 url = f"{api_base}/chat/completions"
 headers = {
@@ -384,6 +396,7 @@ else:
 
 result = {
     "model": model,
+    "provider": provider_label,
     "status": status,
     "tool_support": tool_support,
     "tool_successes": tool_successes,
@@ -399,22 +412,23 @@ PY
   status=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d['status'])" "$probe_result")
   latency=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d['latency'])" "$probe_result")
   tools=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d['tool_support'])" "$probe_result")
+  provider=$("$PYTHON_BIN" -c "import json, sys; d=json.loads(sys.argv[1]); print(d.get('provider', 'UNKNOWN'))" "$probe_result")
 
   if [ "$status" = "OK" ]; then
     is_slow=$(awk -v lat="$latency" -v slow="$SLOW_THRESHOLD" 'BEGIN {print (lat >= slow) ? "1" : "0"}')
     if [ "$is_slow" = "1" ]; then
-      echo -e "${YELLOW}✔ READY [SLOW]${RESET}    ${DIM}(Tools: 2/2 | Avg Latency: ${latency}s)${RESET}"
+      echo -e "${YELLOW}✔ READY [SLOW]${RESET}    ${DIM}([${provider}] Tools: 2/2 | Avg Latency: ${latency}s)${RESET}"
     else
-      echo -e "${GREEN}✔ READY [FAST]${RESET}    ${DIM}(Tools: 2/2 | Avg Latency: ${latency}s)${RESET}"
+      echo -e "${GREEN}✔ READY [FAST]${RESET}    ${DIM}([${provider}] Tools: 2/2 | Avg Latency: ${latency}s)${RESET}"
     fi
   elif [ "$status" = "UNSTABLE" ]; then
-    echo -e "${YELLOW}⚠ UNSTABLE [50%]${RESET}  ${DIM}(Tools: 1/2 intermittent | Latency: ${latency}s)${RESET}"
+    echo -e "${YELLOW}⚠ UNSTABLE [50%]${RESET}  ${DIM}([${provider}] Tools: 1/2 intermittent | Latency: ${latency}s)${RESET}"
   elif [ "$status" = "NO_TOOL" ]; then
-    echo -e "${RED}✘ INCOMPATIBLE${RESET}    ${DIM}(Tools: 0/2 | Ignored function call)${RESET}"
+    echo -e "${RED}✘ INCOMPATIBLE${RESET}    ${DIM}([${provider}] Tools: 0/2 | Ignored function call)${RESET}"
   elif [ "$status" = "HTTP_429" ]; then
-    echo -e "${YELLOW}⏳ RATE-LIMITED${RESET}   ${DIM}(HTTP 429 - In cooldown)${RESET}"
+    echo -e "${YELLOW}⏳ RATE-LIMITED${RESET}   ${DIM}([${provider}] HTTP 429 - In cooldown)${RESET}"
   else
-    echo -e "${RED}✖ FAILED (${status})${RESET} ${DIM}(Latency: ${latency}s)${RESET}"
+    echo -e "${RED}✖ FAILED (${status})${RESET} ${DIM}([${provider}] Latency: ${latency}s)${RESET}"
   fi
 
   # Append to results JSON
@@ -511,12 +525,13 @@ RESET = "\033[0m"
 print(f"{BOLD}{'='*88}{RESET}")
 print(f"{BOLD}{'ROUTER CANDIDATE MODELS & STATUS SUMMARY':^88}{RESET}")
 print(f"{BOLD}{'='*88}{RESET}")
-print(f"{BOLD}{'Order':<12} {'Model':<44} {'Tool Calling':<14} {'Avg Latency':<14} {'Verdict'}{RESET}")
+print(f"{BOLD}{'Order':<12} {'Provider':<12} {'Model':<44} {'Tool Calling':<14} {'Avg Latency':<14} {'Verdict'}{RESET}")
 print(f"{'-'*88}")
 
 rank = 1
 for m in ok_models:
     lat_str = f"{m['latency']:.2f}s"
+    prov = m.get('provider', 'UNKNOWN')
     if m['latency'] < 3.0:
         verdict = f"{GREEN}TIER 1 (Fast & Stable){RESET}"
         p_badge = f"{GREEN}#{rank:<2} [Active]{RESET}"
@@ -527,22 +542,26 @@ for m in ok_models:
         verdict = f"{YELLOW}TIER 3 (High Latency){RESET}"
         p_badge = f"{YELLOW}#{rank:<2} [Backup]{RESET}"
     tools_badge = f"{GREEN}100% (2/2){RESET}"
-    print(f"{p_badge:<21} {m['model']:<44} {tools_badge:<23} {lat_str:<14} {verdict}")
+    print(f"{p_badge:<21} {prov:<12} {m['model']:<44} {tools_badge:<23} {lat_str:<14} {verdict}")
     rank += 1
 
 for m in unstable_models:
     lat_str = f"{m['latency']:.2f}s"
-    print(f"{YELLOW}{'--  [Exclude]':<12}{RESET} {m['model']:<44} {YELLOW}{'50% (1/2)':<14}{RESET} {lat_str:<14} {YELLOW}UNSTABLE (Flaky Tools){RESET}")
+    prov = m.get('provider', 'UNKNOWN')
+    print(f"{YELLOW}{'--  [Exclude]':<12}{RESET} {prov:<12} {m['model']:<44} {YELLOW}{'50% (1/2)':<14}{RESET} {lat_str:<14} {YELLOW}UNSTABLE (Flaky Tools){RESET}")
 
 for m in no_tool_models:
     lat_str = f"{m['latency']:.2f}s"
-    print(f"{RED}{'--  [Exclude]':<12}{RESET} {m['model']:<44} {RED}{'0%  (0/2)':<14}{RESET} {lat_str:<14} {RED}INCOMPATIBLE (No Tools){RESET}")
+    prov = m.get('provider', 'UNKNOWN')
+    print(f"{RED}{'--  [Exclude]':<12}{RESET} {prov:<12} {m['model']:<44} {RED}{'0%  (0/2)':<14}{RESET} {lat_str:<14} {RED}INCOMPATIBLE (No Tools){RESET}")
 
 for m in rate_limited_models:
-    print(f"{YELLOW}{'--  [Cooldown]':<12}{RESET} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {YELLOW}RATE-LIMITED (429){RESET}")
+    prov = m.get('provider', 'UNKNOWN')
+    print(f"{YELLOW}{'--  [Cooldown]':<12}{RESET} {prov:<12} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {YELLOW}RATE-LIMITED (429){RESET}")
 
 for m in failed_models:
-    print(f"{RED}{'--  [Exclude]':<12}{RESET} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {RED}FAILED ({m['status']}){RESET}")
+    prov = m.get('provider', 'UNKNOWN')
+    print(f"{RED}{'--  [Exclude]':<12}{RESET} {prov:<12} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {RED}FAILED ({m['status']}){RESET}")
 
 print(f"{'='*88}\n")
 
@@ -553,22 +572,26 @@ if ok_models:
     print(f"\n{GREEN}✔ {len(ok_models)} Verified Stable Model(s) Ready for config.yaml Pool:{RESET}")
     for i, m in enumerate(ok_models, 1):
         tier = "Ultra-Fast" if m['latency'] < 2.0 else ("Fast" if m['latency'] < 5.0 else "Queue-Delayed")
-        print(f"   {BOLD}{i}. {m['model']}{RESET} — {m['latency']:.2f}s ({tier})")
+        prov = m.get('provider', 'UNKNOWN')
+        print(f"   {BOLD}{i}. {m['model']}{RESET} [{prov}] — {m['latency']:.2f}s ({tier})")
 
 if unstable_models:
     print(f"\n{YELLOW}⚠ {len(unstable_models)} Flaky Model(s) (Excluded to prevent broken OpenCode sessions):{RESET}")
     for m in unstable_models:
-        print(f"   - {BOLD}{m['model']}{RESET}: inconsistent function calling (succeeded only 1 of 2 probes).")
+        prov = m.get('provider', 'UNKNOWN')
+        print(f"   - {BOLD}{m['model']}{RESET} [{prov}]: inconsistent function calling (succeeded only 1 of 2 probes).")
 
 if no_tool_models:
     print(f"\n{RED}✖ {len(no_tool_models)} Incompatible Model(s) (No tool-calling support):{RESET}")
     for m in no_tool_models:
-        print(f"   - {BOLD}{m['model']}{RESET}: answered plain text and ignored function-calling parameters.")
+        prov = m.get('provider', 'UNKNOWN')
+        print(f"   - {BOLD}{m['model']}{RESET} [{prov}]: answered plain text and ignored function-calling parameters.")
 
 if slow_models:
     print(f"\n{YELLOW}⚠ {len(slow_models)} High-Latency Model(s) (> {$SLOW_THRESHOLD:.0f}s):{RESET}")
     for m in slow_models:
-        print(f"   - {BOLD}{m['model']}{RESET}: {m['latency']:.2f}s average")
+        prov = m.get('provider', 'UNKNOWN')
+        print(f"   - {BOLD}{m['model']}{RESET} [{prov}]: {m['latency']:.2f}s average")
     print(f"   {DIM}Notice: Automatically placed at the bottom of the fallback queue.{RESET}")
 
 if not ok_models:
