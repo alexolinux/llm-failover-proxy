@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Gera regras de validação dinamicamente a partir do config.yaml
-Single source of truth: se está no config.yaml, é válido
+Generates validation rules dynamically from config.yaml
+Single source of truth: if it's in config.yaml, it's valid
 """
 
 import yaml
@@ -11,12 +11,12 @@ import os
 from collections import defaultdict
 
 def generate_validation_rules(config_path):
-    """Extrai provedores únicos do config.yaml e gera regras de validação"""
+    """Extracts unique providers from config.yaml and generates validation rules"""
     
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # Agrupa modelos por provedor (baseado no api_base)
+    # Groups models by provider (based on api_base)
     providers = defaultdict(set)
     
     for entry in config.get('model_list', []):
@@ -27,24 +27,24 @@ def generate_validation_rules(config_path):
         if not model_name or not api_base:
             continue
             
-        # Extrai o nome do provedor do modelo (primeiro segmento)
+        # Extracts the provider name from the model (first segment)
         provider_key = model_name.split('/')[0] if '/' in model_name else 'unknown'
         
-        # Mapeia api_base para provedor conhecido
+        # Maps api_base to known provider
         if 'integrate.api.nvidia.com' in api_base:
             provider = 'nvidia'
         elif 'openrouter.ai' in api_base:
             provider = 'openrouter'
         else:
-            provider = provider_key  # fallback para nome do modelo
+            provider = provider_key  # fallback to model name
         
-        # Armazena o pattern para este provedor
-        # Escapa caracteres especiais para regex safe
+        # Stores the pattern for this provider
+        # Escapes special characters for regex safety
         safe_provider = provider.replace('.', r'\.').replace('-', r'\-')
         pattern = f'^{safe_provider}/[a-zA-Z0-9\\-_.]+(:free)?$'
         providers[provider].add(pattern)
     
-    # Constrói a seção de validação
+    # Builds the validation section
     validation_rules = {
         "allow": [],
         "disallow": [
@@ -56,12 +56,12 @@ def generate_validation_rules(config_path):
         }
     }
     
-    # Adiciona regras allow para cada provedor encontrado
+    # Adds allow rules for each found provider
     priority = 1
     for provider, patterns in providers.items():
-        # Prioridade: 1 para provedores conhecidos (nvidia/openrouter), 2+ para outros
+        # Priority: 1 for known providers (nvidia/openrouter), 2+ for others
         current_priority = 1 if provider in ['nvidia', 'openrouter'] else 2
-        for pattern in sorted(patterns):  # ordena para consistência
+        for pattern in sorted(patterns):  # sort for consistency
             validation_rules["allow"].append({
                 "pattern": pattern,
                 "provider": provider,
@@ -74,12 +74,12 @@ def main():
     config_path = sys.argv[1] if len(sys.argv) > 1 else 'config.yaml'
     output_path = sys.argv[2] if len(sys.argv) > 2 else 'opencode.provider.jsonc'
     
-    # Lê o arquivo atual para preservar a estrutura existente
+    # Reads the current file to preserve the existing structure
     if os.path.exists(output_path):
         with open(output_path, 'r', encoding='utf-8') as f:
             current_content = f.read()
     else:
-        # Conteúdo base se arquivo não existir
+        # Base content if file does not exist
         current_content = '''{
   "$schema": "https://opencode.ai/config.json",
   "model": "llm-free-pool/opencode-main",
@@ -109,20 +109,20 @@ def main():
   }
 }'''
     
-    # Faz parse do conteúdo atual para inserir a validation
+    # Parses the current content to insert the validation
     try:
         config_json = json.loads(current_content)
     except json.JSONDecodeError:
-        # Se não for JSON válido, começa do zero
+        # If not valid JSON, start from scratch
         config_json = {"model": "llm-free-pool/opencode-main", "provider": {}}
     
-    # Gera as regras de validação
+    # Generates the validation rules
     validation_rules = generate_validation_rules(config_path)
     
-    # Insere/atualiza a seção de validation
+    # Inserts/updates the validation section
     config_json["validation"] = {"registry": {"rules": validation_rules}}
     
-    # Escreve de volta com formatação legível
+    # Writes back with readable formatting
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(config_json, f, indent=2, ensure_ascii=False)
     
