@@ -3,18 +3,18 @@
 // "llm-free-pool/opencode-main" — the proxy handles switching underneath it.
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "llm-free-pool/opencode-main",
+  "model": "llm-failover-proxy/opencode-main",
   "provider": {
-    "llm-free-pool": {
+    "llm-failover-proxy": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "LLM Free Pool (auto-failover)",
+      "name": "LLM Free Proxy",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
         "apiKey": "{env:LITELLM_MASTER_KEY}" //Add/Replace your variable LITELLM_MASTER_KEY
       },
       "models": {
         "opencode-main": {
-          "name": "LLM free pool",
+          "name": "llm-failover-proxy",
           "capabilities": {
             "tools": true,
             "input": ["text"],
@@ -29,3 +29,4 @@
     }
   }
 }
+
