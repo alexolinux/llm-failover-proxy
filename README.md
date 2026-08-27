@@ -2,7 +2,7 @@
 
 ---
 
-**opencode + NVIDIA Build + OpenRouter** free tier automatic 429/503 failover
+**opencode + NVIDIA Build + OpenRouter** free tier automatic 429/503 failover proxy.
 
 ## Why a proxy, not an opencode setting?
 
@@ -10,92 +10,177 @@ OpenCode (and similar AI coding tools) doesn't natively support "try model B if 
 
 We use [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/reliability) for this:
 
-- Automatic failover: On `429 Too Many Requests` or `503 Service Unavailable`, LiteLLM puts the active deployment on cooldown and retries with the next deployment in the fallback pool inside the **same** request — OpenCode never sees the error.
-- Lightweight & Portable: Runs locally under your user account without requiring root privileges or complex daemon setups.
-- **Multi-provider**: The pool can mix NVIDIA Build free-tier models and OpenRouter free models in one fallback group. `test-models.sh` resolves the provider from each entry's `api_base`, then probes the correct endpoint with the matching `OPENROUTER_API_KEY` or `NVIDIA_API_KEY`.
+- **Automatic failover**: On `429 Too Many Requests` or `503 Service Unavailable`, LiteLLM puts the active deployment on cooldown and retries with the next deployment in the fallback pool inside the **same** request — OpenCode never sees the error.
+- **Lightweight & Portable**: Runs inside Docker or locally without requiring root privileges or complex daemon setups.
+- **Multi-provider**: The pool mixes NVIDIA Build free-tier models and OpenRouter free models in one fallback group. `test-models.sh` resolves the provider from each entry's `api_base`, then probes the correct endpoint with the matching `OPENROUTER_API_KEY` or `NVIDIA_API_KEY`.
 
 ---
 
 ## File Structure
 
-- `config.yaml.example` - Template for `config.yaml`
-- `llm-failover.env.example` - Template for `llm-failover.env` (Required API Key variables)
-- `opencode.provider.jsonc.example` - OpenCode provider configuration template
-- `test-models.sh` - Validation script to benchmark latency, tool-calling support, issue warnings, and reorder `config.yaml`
-- `reorder_config.py` - Helper script to safely reorder `config.yaml` prioritizing fastest responsive models
-- `generate_validation.py` - Generates provider validation rules from `config.yaml`
-- `run.sh` - Entrypoint script that auto-detects your virtualenv and runs LiteLLM
+```shell
+llm-failover-proxy/
+├── docker-compose.yml          # Docker Compose orchestration
+├── .dockerignore               # Docker build exclusions
+├── requirements.txt            # Python dependencies (local & container runtime)
+├── run.sh                      # Universal CLI entrypoint (local & Docker management)
+├── config.yaml                 # Active proxy model configuration (mounted in container)
+├── llm-failover.env            # Active API keys and secrets (loaded by Docker & local runner)
+│
+├── docker/                     # Container build definitions
+│   └── Dockerfile              # Container image definition
+│
+├── scripts/                    # Utility and maintenance scripts
+│   ├── test-models.sh          # Benchmark and latency probe tool
+│   ├── reorder_config.py       # Safe YAML reordering helper
+│   └── generate_validation.py  # Validation rule generator
+│
+└── templates/                  # Configuration templates
+    ├── config.yaml.template
+    ├── llm-failover.env.template
+    └── opencode.provider.jsonc.template
+```
 
 ---
 
-## Setup & Quickstart
+## Step-by-Step Setup & Usage Guide
 
-Clone this project:
+Follow these steps in order to configure, benchmark, and run your failover proxy.
+
+---
+
+### Step 1: Environment & API Keys
+
+1. Clone the repository:
+
+   ```shell
+   git clone https://github.com/alexolinux/llm-failover-proxy.git
+   cd llm-failover-proxy
+   ```
+
+2. Create your `llm-failover.env` from the template:
+
+   ```shell
+   cp templates/llm-failover.env.template llm-failover.env
+   chmod 600 llm-failover.env
+   ```
+
+3. Open `llm-failover.env` and fill in your keys:
+
+   - `NVIDIA_API_KEY`: Get from [NVIDIA Build](https://build.nvidia.com/).
+   - `OPENROUTER_API_KEY`: Get from [OpenRouter Settings](https://openrouter.ai/settings/keys).
+   - `LITELLM_MASTER_KEY`: Any secret string you choose (e.g. `sk-litellm-...`). OpenCode uses this key to authenticate with your local proxy.
+
+---
+
+### Step 2: Configure Models in `config.yaml`
+
+1. Create your active `config.yaml` from the template:
+
+   ```shell
+   cp templates/config.yaml.template config.yaml
+   ```
+
+2. Understand how models are structured in `config.yaml`:
+
+   ```yaml
+   model_list:
+     # NVIDIA Build free tier model
+     - model_name: opencode-main
+       litellm_params:
+         model: openai/nvidia/llama-3.3-nemotron-super-49b-v1
+         api_base: https://integrate.api.nvidia.com/v1
+         api_key: os.environ/NVIDIA_API_KEY
+         order: 1
+
+     # OpenRouter free tier model
+     - model_name: opencode-main
+       litellm_params:
+         model: openai/cohere/north-mini-code:free
+         api_base: https://openrouter.ai/api/v1
+         api_key: os.environ/OPENROUTER_API_KEY
+         order: 2
+   ```
+
+3. **Critical Rules for Models**:
+   - **Shared `model_name`**: Every entry in `model_list` must share the same `model_name: "opencode-main"`. This groups all models into a single failover pool across providers.
+   - **The `openai/` Prefix**: Every `model:` value **must** start with `openai/` (e.g. `openai/nvidia/...` or `openai/meta/...`). This tells LiteLLM to use its OpenAI-compatible handler and honor the specified `api_base`.
+   - **`order: N`**: Defines the initial fallback priority (1 = first attempted, 2 = second fallback, etc.).
+
+---
+
+### Step 3: Benchmark Models & Auto-Reorder `config.yaml`
+
+Before starting the proxy, run the benchmark tool to test model availability, tool-calling compatibility, and latency:
 
 ```shell
-https://github.com/alexolinux/llm-failover-proxy.git
-cd llm-failover-proxy
+# 1. Load your API keys for the test
+source llm-failover.env
+
+# 2. Preview benchmark ranking without modifying config.yaml (Dry Run):
+./scripts/test-models.sh --dry-run
+
+# 3. Benchmark and automatically reorder config.yaml with the fastest viable models:
+./scripts/test-models.sh --apply
 ```
 
-### Environment Configuration
+#### What `test-models.sh` does:
+- **Validates `config.yaml`**: Checks that all entries have the `openai/` prefix, valid endpoints, and environment variables.
+- **Verifies Tool-Calling Support**: Tests OpenAI function calling (crucial for OpenCode editing/terminal tools) and automatically comments out incompatible models (`NO-TOOL`).
+- **Measures Precise Latency**: Ranks responsive models from fastest to slowest.
+- **Auto-Reorders `config.yaml`** (with `--apply`): Automatically backs up (`config.yaml.bak`) and updates `order: 1..N` so that the fastest, most reliable models are prioritized first in the failover pool.
 
-Configure Environment Keys, creating your `llm-failover.env`
+---
+
+### Step 4: Start the Proxy
+
+Choose how you want to run the proxy:
+
+#### Option A: Run with Docker Compose (Recommended)
+
+Run portably in an isolated container with zero host dependencies:
 
 ```shell
-cp llm-failover.env.example llm-failover.env
-# Edit NVIDIA_API_KEY, OPENROUTER_API_KEY and LITELLM_MASTER_KEY in llm-failover.env with your API Keys.
-chmod 600 llm-failover.env
+# Start proxy in background
+docker compose up -d
+
+# View live logs
+docker compose logs -f
+
+# Check container status and healthcheck
+docker compose ps
+
+# Stop proxy
+docker compose down
 ```
 
-### Adding a model to the pool
+> **Tip**: You can also use the CLI helper `./run.sh docker <up|down|logs|status|restart|build>`.
 
-Create your `config.yaml`
+#### Option B: Run Locally with Python Virtualenv
+
+If you prefer running directly on your host system:
 
 ```shell
-cp config.yaml.example config.yaml
+# Create virtual environment and install requirements
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Manage the local proxy
+./run.sh start    # Start in background
+./run.sh logs     # Follow live logs
+./run.sh status   # Check status and health
+./run.sh stop     # Stop proxy
+./run.sh          # Run in foreground
 ```
 
-Add your LLM Models as below:
+---
 
-```yaml
-model_list:
-  # NVIDIA Build free tier
-  - model_name: opencode-main
-    litellm_params:
-      model: openai/<llm_model_1> # Replace with the LLM Model (must keep the openai/ prefix)
-      api_base: https://integrate.api.nvidia.com/v1
-      api_key: os.environ/NVIDIA_API_KEY
-      order: 1
+### Step 5: Point OpenCode at the Proxy
 
-  # OpenRouter free tier
-  - model_name: opencode-main
-    litellm_params:
-      model: openai/<llm_model_2> # Replace with the LLM Model (must keep the openai/ prefix)
-      api_base: https://openrouter.ai/api/v1
-      api_key: os.environ/OPENROUTER_API_KEY
-      order: 2
-```
+Configure OpenCode to route requests through your local proxy instead of directly to a single provider.
 
-Each entry in `model_list` shares `model_name: "opencode-main"` (that's what groups them into ONE failover pool covering both providers) and sets its own `litellm_params`:
-
-```yaml
-  - model_name: opencode-main
-    litellm_params:
-      model: openai/anthropic/claude-3.5-haiku    # openai/ prefix -> honors api_base -> OpenRouter
-      api_base: https://openrouter.ai/api/v1
-      api_key: os.environ/OPENROUTER_API_KEY
-      order: 3
-```
-
-- **For this repository, every `model:` value must be prefixed with `openai/`** (for example, `openai/nvidia/llama-3.3-nemotron-super-49b-v1` or `openai/cohere/north-mini-code:free`). This is a LiteLLM routing convention for this mixed-provider setup, not a requirement for the model itself or for every LiteLLM deployment. The prefix tells LiteLLM to use its OpenAI-compatible handler and honor the entry's `api_base`; LiteLLM strips the prefix before sending the model ID to NVIDIA or OpenRouter. Without it, provider-shaped IDs such as `nvidia/...` or `cohere/...` may select a native handler and ignore `api_base`, which can send an OpenRouter model to the wrong service and produce errors such as `404 page not found`.
-- If you use a single provider with LiteLLM's native handler, that provider may not need the prefix. Do not copy that pattern into this project unless you also change the validation and routing design.
-- NVIDIA models: `api_base: https://integrate.api.nvidia.com/v1` + `api_key: os.environ/NVIDIA_API_KEY`.
-- OpenRouter models: set `api_base: https://openrouter.ai/api/v1` and `api_key: os.environ/OPENROUTER_API_KEY`.
-- `test-models.sh` inspects this list as the single source of truth and probes each entry against the matching endpoint.
-
-### Point OpenCode at the Proxy
-
-Edit and merge the contents of `opencode.provider.jsonc.example` into your OpenCode configuration (`~/.config/opencode/opencode.json` or local `opencode.json`):
+Merge the template from `templates/opencode.provider.jsonc.template` into your OpenCode configuration (`~/.config/opencode/opencode.json` or local `opencode.json`):
 
 ```jsonc
 {
@@ -107,7 +192,7 @@ Edit and merge the contents of `opencode.provider.jsonc.example` into your OpenC
       "name": "LLM Free Proxy (auto-failover)",
       "options": {
         "baseURL": "http://127.0.0.1:4000/v1",
-        "apiKey": "{env:LITELLM_MASTER_KEY}" //Or replace for your Key value
+        "apiKey": "{env:LITELLM_MASTER_KEY}" // Or replace with your LITELLM_MASTER_KEY string
       },
       "models": {
         "opencode-main": {
@@ -128,82 +213,16 @@ Edit and merge the contents of `opencode.provider.jsonc.example` into your OpenC
 }
 ```
 
-A single pool `llm-failover-proxy` covers both NVIDIA Build and OpenRouter free models — the proxy routes across the whole fallback group (all `model_list` entries sharing `model_name: opencode-main`) underneath.
+---
 
-### Python Virtual Environment
+### Step 6: Monitor Proxy & Automatic Failovers
 
-```shell
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+Follow proxy logs to see routing and automatic failover in action:
 
-### Benchmark Models & Auto-Reorder `config.yaml`
+- **Docker**: `docker compose logs -f`
+- **Local**: `./run.sh logs`
 
-Run the following commands to prepare your custom OpenCode LLM proxy.
-
-```shell
-source llm-failover.env
-```
-
-```shell
-# Preview ranking and proposed config without writing:
-./test-models.sh --dry-run
-```
-
-```shell
-# Run test and automatically update config.yaml with the fastest viable models:
-./test-models.sh --apply
-```
-
-Flags: `-c, --config <path>` (default `./config.yaml`), `-a, --apply` (alias: `--update-config`), `-d, --dry-run`, `-b, --burst` (10-request concurrency rate-limit isolation test), `-h, --help`.
-
-This script:
-
-0. **Validates `config.yaml` structure** (before benchmarking): checks every active entry for the required `openai/` prefix, a known free-tier `api_base`, and a set `api_key` env var — and fails fast with a diagnostic if the pool would break LiteLLM at runtime (e.g. the `404 page not found` caused by a missing `openai/` prefix on an OpenRouter entry).
-1. **Verifies Tool-Calling Support**: Identifies models that properly support OpenAI-compatible function calling (crucial for OpenCode editing/terminal tools).
-2. **Measures Precise Latency**: Measures decimal response time and ranks models from fastest to slowest.
-3. **Issues Usability Warnings**:
-   - 🔴 **Incompatible (`NO-TOOL`)**: Models that return text but ignore tool calls are flagged for exclusion.
-   - 🔴 **Inaccessible / Error (`HTTP 4xx/5xx`)**: Offline or failing models — a `404` notes the model may have been removed or renamed by the provider (free model lists change often), and a `401/403` notes the key was rejected or the model left the free tier.
-   - 🟡 **High Latency Alert (`> 10s`)**: Warns about sluggish models and demotes them to lower priority.
-4. **Auto-Reorders `config.yaml`** (with `--apply`): Automatically creates a backup (`config.yaml.bak`) and updates `order: 1..N` prioritizing the most responsive verified models. Rate-limited models (`429`) are kept active at the end of the pool; unstable/incompatible models are commented out with a diagnostic note — **commented-out models are never deleted**, they stay in the file ready to be un-commented or re-tested later. The `openai/` prefix is preserved on every reorder.
-
-### 5. Start & Control the Proxy
-
-You can control the proxy using `./run.sh` directly or load the `llmfailoverproxy` shell function into your terminal session:
-
-#### Direct CLI
-
-```shell
-./run.sh start    # Start in background
-./run.sh status   # Check status and health
-./run.sh logs     # Follow logs in real time
-./run.sh stop     # Stop background proxy
-./run.sh restart  # Restart proxy
-./run.sh          # Run in foreground
-```
-
-#### Shell Function (Optional)
-
-Source `run.sh` in your shell (or add `source /path/to/llm-failover-proxy/run.sh` to your `~/.bashrc` / `~/.zshrc`):
-
-```shell
-source ./run.sh
-
-# Now manage llm-failover-proxy from any directory:
-llmfailoverproxy start
-llmfailoverproxy status
-llmfailoverproxy logs
-llmfailoverproxy stop
-```
-
-`run.sh` automatically finds a LiteLLM executable, loads `llm-failover.env`, and starts the proxy on `127.0.0.1:4000`. Set `HOST` or `PORT` to override the bind address. The default command is foreground `run`; `start` runs it in the background.
-
-### 6. Monitor Proxy & Failovers
-
-Logs stream directly in foreground mode or via `./run.sh logs`.
-When a rate-limit (429) or overload (503) occurs, LiteLLM logs the cooldown and routes the prompt to the next deployment seamlessly.
+When a provider returns `429 Too Many Requests` or `503 Service Unavailable`, LiteLLM puts that model on cooldown and immediately forwards the request to the next deployment in the pool within the same request.
 
 ---
 
@@ -218,3 +237,4 @@ When a rate-limit (429) or overload (503) occurs, LiteLLM logs the cooldown and 
 ## Author
 
 https://alexolinux.com
+

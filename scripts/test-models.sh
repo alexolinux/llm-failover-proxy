@@ -13,18 +13,27 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_FILE="${CONFIG_FILE:-$PROJECT_ROOT/config.yaml}"
 APPLY_CONFIG=false
 DRY_RUN=false
 RUN_BURST=false
 
-if [ ! -x "$SCRIPT_DIR/.venv/bin/python" ]; then
-  echo -e "\033[0;31m[ERROR] Project virtualenv not found: $SCRIPT_DIR/.venv\033[0m"
-  echo "Create it with: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
-  exit 1
-fi
+find_python_bin() {
+  if [[ -n "${VIRTUAL_ENV:-}" ]] && [[ -x "$VIRTUAL_ENV/bin/python" ]]; then
+    echo "$VIRTUAL_ENV/bin/python"
+  elif [[ -x "$PROJECT_ROOT/.venv/bin/python" ]]; then
+    echo "$PROJECT_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    echo "$(command -v python3)"
+  else
+    echo -e "\033[0;31m[ERROR] Python executable not found.\033[0m" >&2
+    echo "Create virtualenv with: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt" >&2
+    exit 1
+  fi
+}
 
-PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+PYTHON_BIN="$(find_python_bin)"
 
 resolve_api_base_for_model() {
   local model_name="$1"
@@ -110,9 +119,10 @@ done
 
 # Load the project-managed environment file as the single source of truth.
 # Supports both llm-failover.env (project standard) and .env (common convention)
-for env_file in "$SCRIPT_DIR/llm-failover.env" "$SCRIPT_DIR/.env"; do
+for env_file in "$PROJECT_ROOT/llm-failover.env" "$PROJECT_ROOT/.env" "$PWD/llm-failover.env" "$PWD/.env"; do
   if [ -f "$env_file" ]; then
     set -a
+    # shellcheck disable=SC1090
     source "$env_file" 2>/dev/null || true
     set +a
     break
