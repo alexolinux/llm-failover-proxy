@@ -168,6 +168,43 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     return 0
 fi
 
+docker_cmd() {
+    local dc
+    if docker compose version >/dev/null 2>&1; then
+        dc="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        dc="docker-compose"
+    else
+        echo "Error: neither 'docker compose' nor 'docker-compose' found." >&2
+        return 1
+    fi
+    local subaction="${1:-up}"
+    shift || true
+    case "$subaction" in
+        start|up)
+            $dc up -d "$@"
+            ;;
+        stop|down)
+            $dc down "$@"
+            ;;
+        restart)
+            $dc restart "$@"
+            ;;
+        status|ps)
+            $dc ps "$@"
+            ;;
+        logs)
+            $dc logs -f "$@"
+            ;;
+        build)
+            $dc build "$@"
+            ;;
+        *)
+            $dc "$subaction" "$@"
+            ;;
+    esac
+}
+
 # Direct CLI execution
 action="${1:-run}"
 case "$action" in
@@ -187,20 +224,32 @@ case "$action" in
     logs)
         logs_service
         ;;
+    docker|compose)
+        shift || true
+        docker_cmd "$@"
+        ;;
     run)
         shift || true
         start_foreground "$@"
         ;;
     -h|--help|help)
-        echo "Usage: ./run.sh [start|stop|restart|status|logs|run]"
+        echo "Usage: ./run.sh [start|stop|restart|status|logs|run|docker <cmd>]"
         echo ""
-        echo "Commands:"
+        echo "Local Commands:"
         echo "  start    - Start llm-failover-proxy in the background"
-        echo "  stop     - Stop the background llm-failover-proxy proxy"
+        echo "  stop     - Stop the background proxy"
         echo "  restart  - Restart the background proxy"
         echo "  status   - Check if the proxy is running and healthy"
         echo "  logs     - Follow proxy logs in real time"
         echo "  run      - Run the proxy in the foreground (default)"
+        echo ""
+        echo "Docker Commands:"
+        echo "  docker start|up      - Start proxy via docker-compose in background"
+        echo "  docker stop|down     - Stop docker-compose proxy container"
+        echo "  docker restart       - Restart container"
+        echo "  docker status|ps     - Show container status"
+        echo "  docker logs          - Follow container logs"
+        echo "  docker build         - Build container image"
         echo ""
         echo "Shell function:"
         echo "  source ./run.sh   # Enables 'llmfailoverproxy <command>' in your current shell"
