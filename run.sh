@@ -182,7 +182,7 @@ docker_cmd() {
     shift || true
     case "$subaction" in
         start|up)
-            $dc up -d "$@"
+            $dc up -d --build "$@"
             ;;
         stop|down)
             $dc down "$@"

@@ -142,7 +142,7 @@ Run portably in an isolated container with zero host dependencies:
 
 ```shell
 # Start proxy in background
-docker compose up -d
+docker compose up -d --build
 
 # View live logs
 docker compose logs -f
