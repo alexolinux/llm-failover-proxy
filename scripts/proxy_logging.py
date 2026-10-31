@@ -1,11 +1,6 @@
 """Minimal LiteLLM callback for provider/model and failure visibility."""
 
-import logging
-
 from litellm.integrations.custom_logger import CustomLogger
-
-
-logger = logging.getLogger("llm-failover-proxy")
 
 
 def event_details(kwargs: dict) -> tuple[str, str, str, str]:
@@ -53,12 +48,10 @@ class ProxyEventLogger(CustomLogger):
         self, kwargs, response_obj, start_time, end_time
     ):
         model, provider, api_base, deployment_id = event_details(kwargs)
-        logger.info(
-            "LLM_UPSTREAM_SUCCESS provider=%s model=%s api_base=%s deployment_id=%s",
-            provider,
-            model,
-            api_base,
-            deployment_id,
+        print(
+            f"LLM_UPSTREAM_SUCCESS provider={provider} model={model} "
+            f"api_base={api_base} deployment_id={deployment_id}",
+            flush=True,
         )
 
     async def async_log_failure_event(
@@ -66,15 +59,11 @@ class ProxyEventLogger(CustomLogger):
     ):
         model, provider, api_base, deployment_id = event_details(kwargs)
         status, category = failure_details(kwargs)
-        logger.warning(
-            "LLM_UPSTREAM_FAILURE provider=%s model=%s api_base=%s "
-            "deployment_id=%s status=%s category=%s",
-            provider,
-            model,
-            api_base,
-            deployment_id,
-            status or "unknown",
-            category,
+        print(
+            f"LLM_UPSTREAM_FAILURE provider={provider} model={model} "
+            f"api_base={api_base} deployment_id={deployment_id} "
+            f"status={status or 'unknown'} category={category}",
+            flush=True,
         )
 
 
