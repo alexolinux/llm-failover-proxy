@@ -1,6 +1,13 @@
 """Minimal LiteLLM callback for provider/model and failure visibility."""
 
 from litellm.integrations.custom_logger import CustomLogger
+from scripts.provider_config import provider_from_api_base
+
+
+PROVIDER_LABELS = {
+    "nvidia": "NVIDIA Build",
+    "openrouter": "OpenRouter",
+}
 
 
 def event_details(kwargs: dict) -> tuple[str, str, str, str]:
@@ -13,8 +20,9 @@ def event_details(kwargs: dict) -> tuple[str, str, str, str]:
         or kwargs.get("model")
         or "unknown"
     )
-    provider = standard.get("api_provider") or "unknown"
     api_base = standard.get("api_base") or params.get("api_base") or "unknown"
+    configured_provider = provider_from_api_base(str(api_base))
+    provider = PROVIDER_LABELS.get(configured_provider) or standard.get("api_provider") or "unknown"
     deployment_id = standard.get("model_id") or model_info.get("id") or "unknown"
     return str(model), str(provider), str(api_base), str(deployment_id)
 
