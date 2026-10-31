@@ -34,37 +34,31 @@ find_python_bin() {
 }
 
 PYTHON_BIN="$(find_python_bin)"
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 resolve_api_base_for_model() {
   local model_name="$1"
   "$PYTHON_BIN" - "$CONFIG_FILE" "$model_name" <<'PY'
-import os
 import sys
 import yaml
+from provider_config import PROVIDERS, normalize_api_base, provider_from_api_base
 
 config_path = sys.argv[1]
 model_name = sys.argv[2].replace("openai/", "").strip()
 
-try:
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-except Exception:
-    print("https://integrate.api.nvidia.com/v1|NVIDIA")
-    raise SystemExit
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = yaml.safe_load(f) or {}
 
 for entry in cfg.get("model_list", []):
     params = entry.get("litellm_params", {})
     candidate = str(params.get("model", "")).replace("openai/", "").strip()
     if candidate == model_name:
-        api_base = str(params.get("api_base", "https://integrate.api.nvidia.com/v1"))
-        if "openrouter.ai" in api_base:
-            provider = "OPENROUTER"
-        else:
-            provider = "NVIDIA"
-        print(f"{api_base}|{provider}")
+        api_base = normalize_api_base(str(params.get("api_base", "")))
+        provider = provider_from_api_base(api_base)
+        print(f"{api_base}|{PROVIDERS[provider]['label']}")
         raise SystemExit
 
-print("https://integrate.api.nvidia.com/v1|NVIDIA")
+raise SystemExit(f"No provider endpoint found for configured model: {model_name}")
 PY
 }
 
@@ -129,12 +123,6 @@ for env_file in "$PROJECT_ROOT/llm-failover.env" "$PROJECT_ROOT/.env" "$PWD/llm-
   fi
 done
 
-if [ -z "${NVIDIA_API_KEY:-}" ]; then
-  echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY is not set in llm-failover.env.\033[0m"
-  echo "Load your project environment file or export NVIDIA_API_KEY before running this script."
-  exit 1
-fi
-
 if [ ! -f "$CONFIG_FILE" ]; then
   echo -e "\033[0;31m[ERROR] Config file not found: $CONFIG_FILE\033[0m"
   exit 1
@@ -159,6 +147,7 @@ echo -e "${BOLD}${BLUE}[Step 0/2] Validating $CONFIG_FILE structure...${RESET}"
 import os
 import sys
 import yaml
+from provider_config import normalize_api_base, provider_from_api_base
 
 config_path = sys.argv[1]
 with open(config_path, "r", encoding="utf-8") as f:
@@ -167,11 +156,6 @@ with open(config_path, "r", encoding="utf-8") as f:
 entries = cfg.get("model_list", [])
 issues = []
 errors = 0
-
-KNOWN_BASES = {
-    "https://integrate.api.nvidia.com/v1": "NVIDIA Build",
-    "https://openrouter.ai/api/v1": "OpenRouter",
-}
 
 for i, entry in enumerate(entries, 1):
     params = entry.get("litellm_params", {})
@@ -195,10 +179,17 @@ for i, entry in enumerate(entries, 1):
             f"'openai/{model}'."
         )
 
-    if api_base and api_base not in KNOWN_BASES:
+    provider = provider_from_api_base(api_base) if api_base else None
+    if api_base and provider is None:
+        errors += 1
         issues.append(
-            f"[WARN] model_list[{i}]: api_base '{api_base}' is not a recognized "
-            f"free-tier endpoint (known: {', '.join(KNOWN_BASES)})."
+            f"[ERROR] model_list[{i}]: unsupported api_base '{api_base}'. "
+            "Use NVIDIA Build or OpenRouter."
+        )
+    elif provider and normalize_api_base(api_base) != api_base:
+        issues.append(
+            f"[WARN] model_list[{i}]: api_base '{api_base}' will be normalized to "
+            f"'{normalize_api_base(api_base)}' when the config is generated with --apply."
         )
     if not api_base:
         errors += 1
@@ -298,15 +289,18 @@ for m in "${MODELS[@]}"; do
   api_base_provider=$(resolve_api_base_for_model "$m")
   api_base_for_model="${api_base_provider%%|*}"
   provider_label="${api_base_provider##*|}"
-  if [[ "$api_base_for_model" == *"openrouter.ai"* ]] || [[ "$m" == openrouter/* ]]; then
-    api_base="$api_base_for_model"
+  api_base="$api_base_for_model"
+  if [[ "$provider_label" == "OPENROUTER" ]]; then
     if [ -z "${OPENROUTER_API_KEY:-}" ]; then
       echo -e "\033[0;31m[ERROR] OPENROUTER_API_KEY is not set in llm-failover.env for model: $m\033[0m"
       exit 1
     fi
     api_key="${OPENROUTER_API_KEY}"
   else
-    api_base="https://integrate.api.nvidia.com/v1"
+    if [ -z "${NVIDIA_API_KEY:-}" ]; then
+      echo -e "\033[0;31m[ERROR] NVIDIA_API_KEY is not set in llm-failover.env for model: $m\033[0m"
+      exit 1
+    fi
     api_key="${NVIDIA_API_KEY}"
   fi
 
@@ -352,6 +346,7 @@ payload = {
 
 latencies = []
 statuses = []
+error_signals = []
 tool_successes = 0
 
 for probe in range(2):
@@ -362,20 +357,49 @@ for probe in range(2):
         latencies.append(elapsed)
         statuses.append(r.status_code)
         if r.status_code == 200:
+            error_signals.append("")
             data = r.json()
             msg = data.get("choices", [{}])[0].get("message", {})
             if msg.get("tool_calls"):
                 tool_successes += 1
-        elif r.status_code == 429 and probe == 0:
-            time.sleep(1.5)
+        else:
+            try:
+                error = r.json().get("error", {})
+                if isinstance(error, dict):
+                    error_signals.append(" ".join(
+                        str(error.get(field, ""))
+                        for field in ("message", "type", "code")
+                    ).lower())
+                else:
+                    error_signals.append(str(error).lower())
+            except Exception:
+                error_signals.append(r.text.lower())
+            if r.status_code == 429 and probe == 0:
+                time.sleep(1.5)
     except Exception:
         latencies.append(99.0)
         statuses.append(0)
+        error_signals.append("")
     time.sleep(0.3)
 
 avg_latency = sum(latencies) / len(latencies) if latencies else 99.0
 
-if tool_successes == 2:
+if any(s in (401, 403) for s in statuses):
+    status = "AUTH_ERROR"
+    tool_support = "N/A"
+    note = f"HTTP status {statuses} - API key rejected or provider permission denied"
+elif any(
+    s == 429 and any(marker in signal for marker in ("quota", "credit", "billing", "insufficient"))
+    for s, signal in zip(statuses, error_signals)
+):
+    status = "QUOTA_LIMIT"
+    tool_support = "N/A"
+    note = "HTTP 429 - provider quota, credits, or billing limit reported"
+elif any(s == 429 for s in statuses):
+    status = "HTTP_429"
+    tool_support = "N/A"
+    note = "HTTP 429 - provider rate limit reached"
+elif tool_successes == 2:
     status = "OK"
     tool_support = "YES"
     note = "100% stable tool calling"
@@ -387,14 +411,6 @@ elif any(s == 200 for s in statuses):
     status = "NO_TOOL"
     tool_support = "NO"
     note = "Ignored tool calls (pure text response)"
-elif all(s == 429 for s in statuses):
-    status = "HTTP_429"
-    tool_support = "N/A"
-    note = "Rate limit reached (429)"
-elif any(s in (401, 403) for s in statuses):
-    status = f"HTTP_{statuses[0]}"
-    tool_support = "N/A"
-    note = f"HTTP status {statuses} — API key rejected or model is not in this provider's free tier"
 elif statuses[0] == 404:
     status = "HTTP_404"
     tool_support = "N/A"
@@ -437,6 +453,10 @@ PY
     echo -e "${RED}✘ INCOMPATIBLE${RESET}    ${DIM}([${provider}] Tools: 0/2 | Ignored function call)${RESET}"
   elif [ "$status" = "HTTP_429" ]; then
     echo -e "${YELLOW}⏳ RATE-LIMITED${RESET}   ${DIM}([${provider}] HTTP 429 - In cooldown)${RESET}"
+  elif [ "$status" = "QUOTA_LIMIT" ]; then
+    echo -e "${YELLOW}⏳ QUOTA / CREDITS${RESET} ${DIM}([${provider}] provider quota or credits exhausted)${RESET}"
+  elif [ "$status" = "AUTH_ERROR" ]; then
+    echo -e "${RED}✖ API KEY / ACCESS${RESET} ${DIM}([${provider}] HTTP 401/403 - verify key and permissions)${RESET}"
   else
     echo -e "${RED}✖ FAILED (${status})${RESET} ${DIM}([${provider}] Latency: ${latency}s)${RESET}"
   fi
@@ -521,7 +541,9 @@ ok_models.sort(key=lambda x: x['latency'])
 unstable_models = [r for r in results if r['status'] == 'UNSTABLE']
 no_tool_models = [r for r in results if r['status'] == 'NO_TOOL']
 rate_limited_models = [r for r in results if r['status'] == 'HTTP_429']
-failed_models = [r for r in results if r['status'] not in ['OK', 'UNSTABLE', 'NO_TOOL', 'HTTP_429']]
+quota_limit_models = [r for r in results if r['status'] == 'QUOTA_LIMIT']
+auth_error_models = [r for r in results if r['status'] == 'AUTH_ERROR']
+failed_models = [r for r in results if r['status'] not in ['OK', 'UNSTABLE', 'NO_TOOL', 'HTTP_429', 'QUOTA_LIMIT', 'AUTH_ERROR']]
 slow_models = [r for r in ok_models if r['latency'] >= $SLOW_THRESHOLD]
 
 BOLD = "\033[1m"
@@ -568,6 +590,14 @@ for m in no_tool_models:
 for m in rate_limited_models:
     prov = m.get('provider', 'UNKNOWN')
     print(f"{YELLOW}{'--  [Cooldown]':<12}{RESET} {prov:<12} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {YELLOW}RATE-LIMITED (429){RESET}")
+
+for m in quota_limit_models:
+  prov = m.get('provider', 'UNKNOWN')
+  print(f"{YELLOW}{'--  [Quota]':<12}{RESET} {prov:<12} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {YELLOW}QUOTA / CREDITS LIMIT (429){RESET}")
+
+for m in auth_error_models:
+  prov = m.get('provider', 'UNKNOWN')
+  print(f"{RED}{'--  [Access]':<12}{RESET} {prov:<12} {m['model']:<44} {DIM}{'N/A':<14}{RESET} {'--':<14} {RED}API KEY / PERMISSION ERROR{RESET}")
 
 for m in failed_models:
     prov = m.get('provider', 'UNKNOWN')
