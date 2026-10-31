@@ -83,6 +83,8 @@ router_settings:
 
 # ── LiteLLM settings ──────────────────────────────────────────────────────────
 litellm_settings:
+  callbacks:
+    - scripts.proxy_logging.proxy_logger
   drop_params: true          # ignore unsupported params instead of failing
   request_timeout: 45        # fail over from a hung model before the client times out
   set_verbose: false

@@ -224,6 +224,14 @@ Follow proxy logs to see routing and automatic failover in action:
 
 When a provider returns `429 Too Many Requests` or `503 Service Unavailable`, LiteLLM puts that model on cooldown and immediately forwards the request to the next deployment in the pool within the same request.
 
+The proxy logs each upstream attempt without recording prompts or responses:
+
+- `LLM_UPSTREAM_SUCCESS` identifies the provider and model that answered.
+- `LLM_UPSTREAM_FAILURE` identifies the failed model, HTTP status, and category: `RATE_LIMIT`, `QUOTA_OR_CREDITS_LIMIT`, `API_KEY_OR_PERMISSION`, or a provider/server error.
+- When failover succeeds, the failed attempt is followed by a success line for the model that answered. Inspect with `docker compose logs -f` or `./run.sh logs`.
+
+These events are emitted by the callback in `scripts/proxy_logging.py`. The template enables it, and `./scripts/test-models.sh --apply` adds it to generated configs while preserving other callbacks.
+
 ---
 
 ## Tuning Knobs in `config.yaml`

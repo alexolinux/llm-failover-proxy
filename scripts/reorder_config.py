@@ -4,7 +4,7 @@ Helper script to reorder models in config.yaml based on test-models.sh benchmark
 
 Reordering logic:
   - OK (100% stable, 2/2 tool probes): Included as active entries, ordered by latency.
-  - HTTP_429 (rate-limited at test time): Preserved as active entries at the end of the pool.
+    - HTTP_429 / QUOTA_LIMIT (rate-limited at test time): Preserved as active entries at the end of the pool.
     Rate limits are transient — the model may be fully functional when the proxy starts.
   - UNSTABLE (flaky, 1/2 tool probes): Commented out with an explanatory note.
   - NO_TOOL (0/2 tool probes): Commented out with an incompatibility note.
@@ -19,6 +19,7 @@ import shutil
 import argparse
 import yaml
 from datetime import datetime
+from provider_config import PROVIDERS, normalize_api_base, provider_from_api_base
 
 
 def ensure_openai_prefix(model: str) -> str:
@@ -27,6 +28,34 @@ def ensure_openai_prefix(model: str) -> str:
     breaks mixed-provider pools like NVIDIA + OpenRouter)."""
     clean = model.replace("openai/", "").strip()
     return f"openai/{clean}" if clean else model
+
+
+def normalized_params(params: dict) -> dict:
+    """Return model params with a canonical provider URL and matching env key."""
+    normalized = dict(params)
+    provider = provider_from_api_base(normalized.get("api_base", ""))
+    if provider is None:
+        return normalized
+
+    provider_config = PROVIDERS[provider]
+    normalized["api_base"] = normalize_api_base(normalized["api_base"])
+    api_key = str(normalized.get("api_key", ""))
+    if api_key.startswith("os.environ/"):
+        key_env = api_key.split("/", 1)[1]
+        known_key_envs = {item["api_key_env"] for item in PROVIDERS.values()}
+        if key_env in known_key_envs:
+            normalized["api_key"] = f"os.environ/{provider_config['api_key_env']}"
+    return normalized
+
+
+def provider_defaults(provider_label: str) -> dict:
+    provider = next(
+        (key for key, value in PROVIDERS.items() if value["label"] == provider_label),
+        None,
+    )
+    if provider is None:
+        raise ValueError(f"Cannot determine provider for new model: {provider_label!r}")
+    return PROVIDERS[provider]
 
 
 def load_config(config_path: str) -> dict:
@@ -48,10 +77,10 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
     ok_models.sort(key=lambda x: float(x.get("latency", 999.0)))
 
     # Rate-limited models: transient 429s — keep them active but at the end
-    rate_limited = [r for r in results if r.get("status") == "HTTP_429"]
+    rate_limited = [r for r in results if r.get("status") in ("HTTP_429", "QUOTA_LIMIT")]
 
     # Genuinely excluded: UNSTABLE (flaky tools), NO_TOOL, CURL_FAIL, or unknown errors
-    excluded = [r for r in results if r.get("status") not in ("OK", "HTTP_429")]
+    excluded = [r for r in results if r.get("status") not in ("OK", "HTTP_429", "QUOTA_LIMIT")]
 
     # Auto-discard models with 0/2 tool calls (NO_TOOL) to prevent broken sessions
     if any(r.get("status") == "NO_TOOL" for r in results):
@@ -80,12 +109,13 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
             entry["litellm_params"]["model"] = ensure_openai_prefix(entry["litellm_params"].get("model", ""))
             new_model_list.append(entry)
         else:
+            provider = provider_defaults(r.get("provider", ""))
             new_model_list.append({
                 "model_name": "opencode-main",
                 "litellm_params": {
                     "model": f"openai/{model_name}",
-                    "api_base": "https://integrate.api.nvidia.com/v1",
-                    "api_key": "os.environ/NVIDIA_API_KEY",
+                    "api_base": provider["api_base"],
+                    "api_key": f"os.environ/{provider['api_key_env']}",
                     "order": order_idx
                 }
             })
@@ -102,12 +132,13 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
             entry["litellm_params"]["model"] = ensure_openai_prefix(entry["litellm_params"].get("model", ""))
             new_model_list.append(entry)
         else:
+            provider = provider_defaults(r.get("provider", ""))
             new_model_list.append({
                 "model_name": "opencode-main",
                 "litellm_params": {
                     "model": f"openai/{model_name}",
-                    "api_base": "https://integrate.api.nvidia.com/v1",
-                    "api_key": "os.environ/NVIDIA_API_KEY",
+                    "api_base": provider["api_base"],
+                    "api_key": f"os.environ/{provider['api_key_env']}",
                     "order": order_idx
                 }
             })
@@ -120,7 +151,7 @@ def reorder_models(config: dict, results: list) -> tuple[dict, list, list, list]
 
 def format_commented_block(entry: dict, status: str, note: str) -> str:
     """Renders a model entry as a YAML comment block with a diagnostic note."""
-    params = entry.get("litellm_params", {})
+    params = normalized_params(entry.get("litellm_params", {}))
     lines = [
         f"  # [EXCLUDED: {status}] {note}",
         f"  # - model_name: {entry.get('model_name', 'opencode-main')}",
@@ -197,7 +228,7 @@ model_list:
 
     body_models = []
     for entry in config.get("model_list", []):
-        params = entry.get("litellm_params", {})
+        params = normalized_params(entry.get("litellm_params", {}))
         body_models.append(
             f"  - model_name: {entry.get('model_name', 'opencode-main')}\n"
             f"    litellm_params:\n"
@@ -257,8 +288,18 @@ model_list:
         {"router_settings": config.get("router_settings", {})},
         sort_keys=False, default_flow_style=False
     )
+    litellm_config = dict(config.get("litellm_settings", {}))
+    callbacks = litellm_config.get("callbacks") or []
+    if isinstance(callbacks, str):
+        callbacks = [callbacks]
+    else:
+        callbacks = list(callbacks)
+    if "scripts.proxy_logging.proxy_logger" not in callbacks:
+        callbacks.append("scripts.proxy_logging.proxy_logger")
+    litellm_config["callbacks"] = callbacks
+
     litellm_settings = yaml.dump(
-        {"litellm_settings": config.get("litellm_settings", {})},
+        {"litellm_settings": litellm_config},
         sort_keys=False, default_flow_style=False
     )
     general_settings = yaml.dump(
